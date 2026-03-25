@@ -1,0 +1,238 @@
+﻿@page "/admin/user/add"
+@page "/admin/user/edit/{UserId}"
+@rendermode InteractiveServer
+
+@using Microsoft.AspNetCore.Authorization
+@using Microsoft.EntityFrameworkCore
+@using WorkOrderSystem.Data
+@using Microsoft.AspNetCore.Identity
+@using System.ComponentModel.DataAnnotations
+
+@attribute [Authorize(Roles = "Manager")]
+
+@inject IServiceScopeFactory ScopeFactory
+@inject NavigationManager NavigationManager
+
+<PageTitle>@(IsEditMode ? "編輯使用者" : "新增使用者")</PageTitle>
+
+<h3>@(IsEditMode ? $"編輯使用者：{userInput.FullName}" : "新增使用者")</h3>
+
+<EditForm Model="userInput" OnValidSubmit="HandleSaveUserAsync" FormName="UserEditForm">
+    <DataAnnotationsValidator />
+
+    @if (errorMessages.Any())
+    {
+        <div class="alert alert-danger">
+            <ul>
+                @foreach (var error in errorMessages)
+                {
+                    <li>@error</li>
+                }
+            </ul>
+        </div>
+    }
+
+    <div class="mb-3">
+        <label class="form-label">完整姓名</label>
+        <InputText class="form-control" @bind-Value="userInput.FullName" />
+        <ValidationMessage For="@(() => userInput.FullName)" />
+    </div>
+    <div class="mb-3">
+        <label class="form-label">使用者帳號 (登入用)</label>
+        <InputText class="form-control" @bind-Value="userInput.UserName" />
+        <ValidationMessage For="@(() => userInput.UserName)" />
+    </div>
+
+    <div class="mb-3">
+        <label class="form-label">Email</label>
+        <InputText type="email" class="form-control" @bind-Value="userInput.Email" />
+        <ValidationMessage For="@(() => userInput.Email)" />
+    </div>
+    <div class="mb-3">
+        <label class="form-label">LINE User ID (用於通知)</label>
+        <InputText class="form-control" @bind-Value="userInput.LineUserId" />
+        <small class="form-text text-muted">格式通常為 U 開頭的一長串英文數字。</small>
+    </div>
+
+    @if (!IsEditMode)
+    {
+        <div class="mb-3">
+            <label class="form-label">密碼</label>
+            <InputText type="password" class="form-control" @bind-Value="userInput.Password" />
+            <ValidationMessage For="@(() => userInput.Password)" />
+        </div>
+        <div class="mb-3">
+            <label class="form-label">確認密碼</label>
+            <InputText type="password" class="form-control" @bind-Value="userInput.ConfirmPassword" />
+            <ValidationMessage For="@(() => userInput.ConfirmPassword)" />
+        </div>
+    }
+
+    <fieldset class="mb-3">
+        <legend class="fs-6">角色權限</legend>
+        <div class="form-check">
+            <InputCheckbox class="form-check-input" @bind-Value="userInput.IsManager" id="isManager" />
+            <label class="form-check-label" for="isManager">管理者</label>
+        </div>
+        <div class="form-check">
+            <InputCheckbox class="form-check-input" @bind-Value="userInput.IsSupervisor" id="isSupervisor" />
+            <label class="form-check-label" for="isSupervisor">主管</label>
+        </div>
+        <div class="form-check">
+            <InputCheckbox class="form-check-input" @bind-Value="userInput.IsEngineer" id="isEngineer" />
+            <label class="form-check-label" for="isEngineer">工程師</label>
+        </div>
+    </fieldset>
+
+    <button type="submit" class="btn btn-primary">儲存變更</button>
+    <a href="/admin/users" class="btn btn-secondary">取消</a>
+</EditForm>
+
+@code {
+    [Parameter]
+    public string? UserId { get; set; }
+
+    private UserEditModel userInput = new();
+    private bool IsEditMode => !string.IsNullOrEmpty(UserId);
+    private List<string> errorMessages = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (IsEditMode)
+        {
+            using (var scope = ScopeFactory.CreateScope())
+            {
+                var userManager = scope.ServiceProvider.GetRequiredService<UserManager<AppUser>>();
+                var user = await userManager.FindByIdAsync(UserId!);
+                if (user != null)
+                {
+                    userInput = new UserEditModel
+                        {
+                            FullName = user.FullName,
+                            UserName = user.UserName,
+                            Email = user.Email,
+                            IsManager = user.IsManager,
+                            IsSupervisor = user.IsSupervisor,
+                            IsEngineer = user.IsEngineer,
+                            LineUserId = user.LineUserId // <-- 新增這一行
+                        };
+                }
+            }
+        }
+    }
+
+    private async Task HandleSaveUserAsync()
+    {
+        errorMessages.Clear();
+        using (var scope = ScopeFactory.CreateScope())
+        {
+            var userManager = scope.ServiceProvider.GetRequiredService<UserManager<AppUser>>();
+            IdentityResult result;
+
+            if (IsEditMode)
+            {
+                // --- 編輯模式 ---
+                var userToUpdate = await userManager.FindByIdAsync(UserId!);
+                if (userToUpdate != null)
+                {
+                    userToUpdate.FullName = userInput.FullName;
+                    userToUpdate.UserName = userInput.UserName;
+                    userToUpdate.Email = userInput.Email;
+                    userToUpdate.LineUserId = userInput.LineUserId; // <-- **就是補上這一行**
+                    userToUpdate.IsManager = userInput.IsManager;
+                    userToUpdate.IsSupervisor = userInput.IsSupervisor;
+                    userToUpdate.IsEngineer = userInput.IsEngineer;
+                    result = await userManager.UpdateAsync(userToUpdate);
+
+                    if (result.Succeeded)
+                    {
+                        // 同步角色
+                        await SyncUserRole(userManager, userToUpdate, "Manager", userInput.IsManager);
+                        await SyncUserRole(userManager, userToUpdate, "Supervisor", userInput.IsSupervisor);
+                        await SyncUserRole(userManager, userToUpdate, "Engineer", userInput.IsEngineer);
+                    }
+                }
+                else
+                {
+                    errorMessages.Add("找不到該使用者。");
+                    return;
+                }
+            }
+            else
+            {
+                // --- 新增模式 ---
+                var newUser = new AppUser
+                    {
+                        FullName = userInput.FullName,
+                        UserName = userInput.UserName,
+                        Email = userInput.Email,
+                        LineUserId = userInput.LineUserId, // <-- **以及補上這一行**
+                        IsManager = userInput.IsManager,
+                        IsSupervisor = userInput.IsSupervisor,
+                        IsEngineer = userInput.IsEngineer,
+                        EmailConfirmed = true
+                    };
+                result = await userManager.CreateAsync(newUser, userInput.Password!);
+
+                if (result.Succeeded)
+                {
+                    // 同步角色
+                    var createdUser = await userManager.FindByEmailAsync(newUser.Email!);
+                    if (createdUser != null)
+                    {
+                        await SyncUserRole(userManager, createdUser, "Manager", userInput.IsManager);
+                        await SyncUserRole(userManager, createdUser, "Supervisor", userInput.IsSupervisor);
+                        await SyncUserRole(userManager, createdUser, "Engineer", userInput.IsEngineer);
+                    }
+                }
+            }
+
+            if (result.Succeeded)
+            {
+                NavigationManager.NavigateTo("/admin/users");
+            }
+            else
+            {
+                foreach (var error in result.Errors)
+                {
+                    errorMessages.Add(error.Description);
+                }
+            }
+        }
+    }
+
+    // 新增一個輔助方法來同步角色
+    private async Task SyncUserRole(UserManager<AppUser> userManager, AppUser user, string role, bool shouldHaveRole)
+    {
+        var isInRole = await userManager.IsInRoleAsync(user, role);
+        if (shouldHaveRole && !isInRole)
+        {
+            await userManager.AddToRoleAsync(user, role);
+        }
+        else if (!shouldHaveRole && isInRole)
+        {
+            await userManager.RemoveFromRoleAsync(user, role);
+        }
+    }
+
+    // 表單專用的資料模型
+    public class UserEditModel
+    {
+        public string? FullName { get; set; }
+        [Required(ErrorMessage = "使用者帳號為必填")]
+        [StringLength(50, ErrorMessage = "使用者帳號長度必須在 {2} 到 {1} 個字元之間。", MinimumLength = 3)]
+        public string? UserName { get; set; }
+        [Required(ErrorMessage = "Email 為必填"), EmailAddress]
+        public string? Email { get; set; }
+
+        [StringLength(100, ErrorMessage = "密碼長度至少需要 {2} 個字元。", MinimumLength = 6)]
+        public string? Password { get; set; }
+        [Compare("Password", ErrorMessage = "密碼與確認密碼不相符。")]
+        public string? ConfirmPassword { get; set; }
+
+        public bool IsManager { get; set; }
+        public bool IsSupervisor { get; set; }
+        public bool IsEngineer { get; set; }
+        public string? LineUserId { get; set; } // <-- 新增這一行
+    }
+}

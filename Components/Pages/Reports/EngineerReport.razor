@@ -1,0 +1,454 @@
+﻿@page "/reports/engineer"
+@rendermode InteractiveServer
+
+@using System.Globalization
+@using Microsoft.EntityFrameworkCore
+@using WorkOrderSystem.Data
+@using WorkOrderSystem.Models
+@using WorkOrderSystem.ViewModels.Reports
+@using Microsoft.AspNetCore.Authorization
+
+@* ✨ ChartJs.Blazor 的 using 應放在 _Imports.razor ✨ *@
+
+@attribute [Authorize(Roles = "Manager,Supervisor")]
+@inject IDbContextFactory<ApplicationDbContext> DbFactory
+
+<PageTitle>工程師報表</PageTitle>
+
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h3 class="mb-0">@ReportTitle</h3>
+</div>
+
+<div class="card bg-light mb-4">
+    @* ... (篩選器卡片內容，保持不變) ... *@
+    <div class="card-body">
+        <div class="row g-3 align-items-start">
+            <div class="col-lg-2 col-md-6">
+                <label for="report-mode" class="form-label">報表類型</label>
+                <InputSelect id="report-mode" class="form-select" @bind-Value="reportMode">
+                    <option value="@ReportMode.Monthly">依月份</option>
+                    <option value="@ReportMode.Quarterly">依季度</option>
+                    <option value="@ReportMode.Yearly">依年份</option>
+                </InputSelect>
+            </div>
+            
+            <div class="col-lg-2 col-md-6">
+                <label for="time-picker" class="form-label">選擇時間區間</label>
+                @if (reportMode == ReportMode.Monthly) {
+                    <InputDate id="time-picker" Type="InputDateType.Month" class="form-control" @bind-Value="selectedDate" />
+                } else if (reportMode == ReportMode.Quarterly) {
+                    <div class="input-group">
+                        <InputNumber @bind-Value="selectedYear" class="form-control" style="max-width: 100px;" />
+                        <InputSelect @bind-Value="selectedQuarter" class="form-select">
+                            <option value="1">Q1</option> <option value="2">Q2</option> <option value="3">Q3</option> <option value="4">Q4</option>
+                        </InputSelect>
+                    </div>
+                } else if (reportMode == ReportMode.Yearly) {
+                    <InputNumber id="time-picker" @bind-Value="selectedYear" class="form-control" />
+                }
+            </div>
+
+            <div class="col-lg-3 col-md-6">
+                <label class="form-label">案件類型</label>
+                <div class="p-2 border rounded bg-white" style="max-height: 150px; overflow-y: auto;">
+                    <div class="form-check">
+                        <input type="checkbox" class="form-check-input" id="all-types" @bind="selectAllTypes" @bind:after="ToggleAllTypes" />
+                        <label class="form-check-label" for="all-types"><strong>全選 / 全不選</strong></label>
+                    </div>
+                    <hr class="my-1" />
+                    @foreach (var type in allWorkOrderTypes) {
+                        <div class="form-check">
+                            <input type="checkbox" class="form-check-input" id="type-@type"
+                                   checked="@selectedWorkOrderTypes.Contains(type)"
+                                   @onchange="(e) => TypeSelectionChanged(type, (bool)e.Value)" />
+                            <label class="form-check-label" for="type-@type">@type</label>
+                        </div>
+                    }
+                </div>
+            </div>
+
+            <div class="col-lg-3 col-md-6">
+                <label class="form-label">工程師</label>
+                <div class="p-2 border rounded bg-white" style="max-height: 150px; overflow-y: auto;">
+                    <div class="form-check">
+                        <input type="checkbox" class="form-check-input" id="all-engineers" @bind="selectAllEngineers" @bind:after="ToggleAllEngineers" />
+                        <label class="form-check-label" for="all-engineers"><strong>全選 / 全不選</strong></label>
+                    </div>
+                    <hr class="my-1" />
+                    @foreach (var engineer in allEngineers) {
+                        <div class="form-check">
+                            <input type="checkbox" class="form-check-input" id="engineer-@engineer.Id"
+                                   checked="@selectedEngineerIds.Contains(engineer.Id)"
+                                   @onchange="(e) => EngineerSelectionChanged(engineer.Id, (bool)e.Value)" />
+                            <label class="form-check-label" for="engineer-@engineer.Id">@engineer.FullName</label>
+                        </div>
+                    }
+                </div>
+            </div>
+            <div class="col-lg-2 col-md-12 d-flex align-items-end">
+                <button class="btn btn-primary w-100" @onclick="GenerateReportAsync" disabled="@isLoading">
+                    @if(isLoading) {
+                        <span class="spinner-border spinner-border-sm"></span><span> 產生中...</span>
+                    } else {
+                        <i class="bi bi-search me-1"></i><span> 產生報表</span>
+                    }
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+@if (isLoading) {
+    <p><em>正在載入報表資料...</em></p>
+} else if (reportData is null) {
+    <p><em>請選擇篩選條件並點擊「產生報表」。</em></p>
+} else if (!reportData.Any()) {
+    <div class="text-center p-5"><p class="lead">在指定的篩選條件下，找不到任何工單紀錄。</p></div>
+} else {
+    <div class="row mb-4">
+        <div class="col-lg-8">
+            <div class="card h-100">
+                <div class="card-header">工程師工作量排行榜</div>
+                <div class="card-body">
+                    <ApexChart TItem="EngineerWorkloadItem" Options="_barChartOptions" Height="300">
+                        <ApexPointSeries TItem="EngineerWorkloadItem"
+                                         Items="@_barChartSeries"
+                                         Name="工單數"
+                                         SeriesType="SeriesType.Bar"
+                                         XValue="@(item => item.EngineerName)"
+                                         YValue="@(item => item.Count)" />
+                    </ApexChart>
+                </div>
+            </div>
+        </div>
+        
+        @* ✨ 核心修正：v2.x 類別名稱為 ChartJsPieChart ✨ *@
+        <div class="col-lg-4">
+            <div class="card h-100">
+                <div class="card-header">案件類型佔比</div>
+                <div class="card-body">
+                    <Chart Config="_pieChartConfig" @ref="_pieChart"  />
+                </div>
+            </div>
+        </div>
+        
+    </div>
+
+    @* ... (手風琴 Accordion 區塊，保持不變) ... *@
+    <div class="accordion" id="engineerReportAccordion">
+        @foreach (var engineerGroup in reportData.OrderBy(g => g.EngineerName))
+        {
+            <div class="accordion-item">
+                <h2 class="accordion-header" id="header-@engineerGroup.EngineerId">
+                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-@engineerGroup.EngineerId" aria-expanded="false">
+                        <span class="fw-bold fs-5">@engineerGroup.EngineerName</span>
+                        <span class="ms-3">
+                            <span class="badge bg-primary rounded-pill">總計 @engineerGroup.TotalWorkOrders</span>
+                            <span class="badge bg-success rounded-pill ms-1">主要 @engineerGroup.PrimaryWorkOrders</span>
+                            <span class="badge bg-info rounded-pill ms-1">協同 @engineerGroup.AssistingWorkOrders</span>
+                        </span>
+                    </button>
+                </h2>
+                <div id="collapse-@engineerGroup.EngineerId" class="accordion-collapse collapse" data-bs-parent="#engineerReportAccordion">
+                    <div class="accordion-body">
+                        <table class="table table-hover table-sm">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>#</th>
+                                    <th>客戶名稱</th>
+                                    <th>工單標題</th>
+                                    <th>參與角色</th>
+                                    <th>狀態</th>
+                                    <th>完成日期</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var wo in engineerGroup.WorkOrders.OrderBy(w => w.WorkOrderId))
+                                {
+                                    <tr>
+                                        <td><a href="/workorders/details/@wo.WorkOrderId">@wo.WorkOrderId.ToString("D6")</a></td>
+                                        <td>@wo.CustomerName</td>
+                                        <td>@wo.Title</td>
+                                        <td>
+                                            @if (wo.IsPrimary) { <span class="badge bg-success">主要負責</span> }
+                                            else { <span class="badge bg-info text-dark">協同參與</span> }
+                                        </td>
+                                        <td>@wo.Status</td>
+                                        <td>@wo.CompletedAt?.ToString("yyyy-MM-dd")</td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        }
+    </div>
+}
+
+
+@code {
+    private List<EngineerReportViewModel>? reportData;
+    private List<AppUser> allEngineers = new();
+    private List<string> allWorkOrderTypes = new();
+    private bool isLoading = false;
+
+    // 篩選條件
+    private ReportMode reportMode = ReportMode.Monthly;
+    private DateTime selectedDate = DateTime.Today;
+    private int selectedYear = DateTime.Today.Year;
+    private int selectedQuarter = 1;
+    private HashSet<string> selectedEngineerIds = new();
+    private HashSet<string> selectedWorkOrderTypes = new();
+    private bool selectAllEngineers = true;
+    private bool selectAllTypes = true;
+
+    // --- 圖表相關物件 ---
+    
+    // 1. ApexChart (長條圖 - 保持不變)
+    private ApexChartOptions<EngineerWorkloadItem> _barChartOptions = new();
+    private List<EngineerWorkloadItem> _barChartSeries = new();
+    
+    // ✨ 核心修正： v2.x 類別名稱為 PieConfig
+    private ChartJs.Blazor.Charts.Chart<PieConfig> _pieChart;
+
+    private PieConfig _pieChartConfig; // v2.x 的 Pie 設定類別
+    
+    
+
+    // 用於圖表資料綁定的輔助類別 (長條圖用)
+    public class EngineerWorkloadItem {
+        public string EngineerName { get; set; }
+        public int Count { get; set; }
+    }
+
+    private enum ReportMode { Monthly, Quarterly, Yearly }
+    
+    private string ReportTitle
+    {
+        get
+        {
+            return reportMode switch
+            {
+                ReportMode.Quarterly => $"工程師報表 ({selectedYear}年 Q{selectedQuarter})",
+                ReportMode.Yearly => $"工程師報表 ({selectedYear}年)",
+                _ => $"工程師報表 ({selectedDate.ToString("yyyy年 MMMM", new CultureInfo("zh-TW"))})",
+            };
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        // ✨ 核心修正：在頁面初始化時，給 _pieChartConfig 一個空設定
+        _pieChartConfig = new PieConfig(); 
+
+        await using var context = DbFactory.CreateDbContext();
+        allEngineers = await context.Users.Where(u => u.IsEngineer).OrderBy(u => u.FullName).ToListAsync();
+        allWorkOrderTypes = await context.WorkOrders.Select(w => w.WorkOrderType).Distinct().OrderBy(t => t).ToListAsync();
+        
+        selectedEngineerIds = allEngineers.Select(e => e.Id).ToHashSet();
+        selectedWorkOrderTypes = allWorkOrderTypes.ToHashSet();
+        SetDefaultTimeSelection();
+        
+        await GenerateReportAsync();
+    }
+    
+    private void SetDefaultTimeSelection()
+    {
+        var today = DateTime.Today;
+        selectedDate = new DateTime(today.Year, today.Month, 1);
+        selectedYear = today.Year;
+        selectedQuarter = (today.Month - 1) / 3 + 1;
+    }
+
+    private (DateTime Start, DateTime End) CalculateDateRange()
+    {
+        return reportMode switch
+        {
+            ReportMode.Quarterly => (new DateTime(selectedYear, (selectedQuarter - 1) * 3 + 1, 1), new DateTime(selectedYear, (selectedQuarter - 1) * 3 + 1, 1).AddMonths(3)),
+            ReportMode.Yearly => (new DateTime(selectedYear, 1, 1), new DateTime(selectedYear, 1, 1).AddYears(1)),
+            _ => (new DateTime(selectedDate.Year, selectedDate.Month, 1), new DateTime(selectedDate.Year, selectedDate.Month, 1).AddMonths(1))
+        };
+    }
+    
+    // ✨ 核心修正：還原 GenerateReportAsync 回到查詢 WorkOrderAssignees 的版本
+    private async Task GenerateReportAsync()
+    {
+        if (isLoading) return;
+        isLoading = true;
+        reportData = null;
+        
+        // ✨ 核心修正：清空圖表
+        _barChartSeries = new List<EngineerWorkloadItem>();
+        _barChartOptions = new ApexChartOptions<EngineerWorkloadItem>();
+        _pieChartConfig = new PieConfig(); // 初始化 ChartJs 設定
+
+
+        try
+        {
+            await using var context = DbFactory.CreateDbContext();
+            var (startDate, endDate) = CalculateDateRange();
+
+            var assignmentsInPeriod = await context.WorkOrderAssignees
+                .AsNoTracking()
+                .Where(a => a.User.IsEngineer)
+                .Where(a => !selectedEngineerIds.Any() || selectedEngineerIds.Contains(a.UserId))
+                .Where(a => !selectedWorkOrderTypes.Any() || selectedWorkOrderTypes.Contains(a.WorkOrder.WorkOrderType))
+                .Where(a => (a.WorkOrder.AssignmentDate >= startDate && a.WorkOrder.AssignmentDate < endDate) || 
+                            (a.WorkOrder.CompletedAt >= startDate && a.WorkOrder.CompletedAt < endDate))
+                .Select(a => new {
+                    a.UserId,
+                    UserName = a.User.FullName,
+                    a.IsPrimary,
+                    WorkOrderType = a.WorkOrder.WorkOrderType,
+                    WorkOrder = new {
+                        a.WorkOrder.Id,
+                        a.WorkOrder.CustomerName,
+                        a.WorkOrder.Title,
+                        a.WorkOrder.Status,
+                        a.WorkOrder.CompletedAt
+                    }
+                })
+                .ToListAsync();
+
+            if(assignmentsInPeriod.Any())
+            {
+                SetupCharts(assignmentsInPeriod);
+                
+                // 這段邏輯是正確的，用來填充 EngineerReportViewModel 的 WorkOrders 列表
+                reportData = assignmentsInPeriod
+                    .GroupBy(a => new { a.UserId, a.UserName })
+                    .Select(g => new EngineerReportViewModel
+                    {
+                        EngineerId = g.Key.UserId,
+                        EngineerName = g.Key.UserName,
+                        WorkOrders = g.Select(wo => new EngineerWorkOrderViewModel
+                        {
+                            WorkOrderId = wo.WorkOrder.Id,
+                            CustomerName = wo.WorkOrder.CustomerName,
+                            Title = wo.WorkOrder.Title,
+                            IsPrimary = wo.IsPrimary,
+                            Status = wo.WorkOrder.Status,
+                            CompletedAt = wo.WorkOrder.CompletedAt
+                        }).ToList()
+                    }).ToList();
+            }
+            else
+            {
+                reportData = new List<EngineerReportViewModel>();
+                SetupCharts(new List<dynamic>()); 
+            }
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+    
+    // ✨ 核心修正：還原 SetupCharts 回到正確處理 assignmentsInPeriod 的版本
+    private void SetupCharts<T>(List<T> assignmentsData)
+    {
+        // 1. 設定長條圖資料 (保持不變)
+        var engineerCounts = assignmentsData
+            .Cast<dynamic>()
+            .GroupBy(a => (string)a.UserName)
+            .Select(g => new EngineerWorkloadItem { 
+                EngineerName = g.Key, 
+                Count = g.Select(x => (int)x.WorkOrder.Id).Distinct().Count() 
+            })
+            .OrderByDescending(x => x.Count)
+            .ToList();
+        
+        _barChartSeries = engineerCounts;
+
+        int maxCount = 0;
+        if (engineerCounts.Any())
+        {
+            maxCount = engineerCounts.Max(e => e.Count);
+        }
+        int tickAmount = maxCount + 1;
+
+        _barChartOptions = new ApexChartOptions<EngineerWorkloadItem>
+        {
+             Yaxis = new List<YAxis> { new YAxis { 
+                 TickAmount = tickAmount,
+                 Labels = new YAxisLabels { Formatter = "(value) => { return parseInt(value); }" }
+             } },
+             PlotOptions = new PlotOptions { Bar = new PlotOptionsBar{ Horizontal = false } }
+        };
+
+        // 2. 設定圓餅圖資料 (✨ 核心修正：使用 v2.x 真實 API)
+        var typeCounts = assignmentsData
+            .Cast<dynamic>()
+            .Select(a => new { a.WorkOrder.Id, a.WorkOrderType }) // 從 assignmentsData 取得類型
+            .Distinct()
+            .GroupBy(wo => (string)wo.WorkOrderType)
+            .Select(g => new { Type = g.Key, Count = g.Count() })
+            .OrderByDescending(x => x.Count)
+            .ToList();
+
+        // 建立 ChartJs 的設定物件
+        _pieChartConfig = new PieConfig // ✨ v2.x 類別
+        {
+            Options = new PieOptions // ✨ v2.x 類別
+            {
+                Responsive = true,
+                MaintainAspectRatio = false,
+                // ✨ 核心修正：明確指定 Legend 類別以消除 CS0104 歧義
+                Legend = new ChartJs.Blazor.ChartJS.Common.Properties.Legend
+                {
+                    Position = Position.Right
+                },
+                Title = new OptionsTitle { Display = false }
+            }
+        };
+        
+        // 我們直接使用 _pieChartConfig.Data，而不是 new 一個
+        if (typeCounts.Any())
+        {
+            // 在加入新資料前，先清除舊資料
+            _pieChartConfig.Data.Labels.Clear();
+            _pieChartConfig.Data.Datasets.Clear();
+            
+            _pieChartConfig.Data.Labels.AddRange(typeCounts.Select(t => t.Type));
+
+            // ✨ 核心修正：使用非泛型的 'PieDataset' (來自 ...PieChart 命名空間)
+            // ✨ 並將 int 轉為 double (v2.x 接受 double)
+            var pieDataset = new PieDataset(typeCounts.Select(t => (double)t.Count).ToList())
+            {
+                BackgroundColor = typeCounts.Select(_ => ColorUtil.RandomColorString()).ToArray()
+            };
+            
+            _pieChartConfig.Data.Datasets.Add(pieDataset);
+        }
+        
+        StateHasChanged();
+    }
+    
+    // ✨ 核心修正：還原這些事件處理方法
+    private void TypeSelectionChanged(string type, bool isSelected)
+    {
+        if (isSelected) { selectedWorkOrderTypes.Add(type); }
+        else { selectedWorkOrderTypes.Remove(type); }
+        selectAllTypes = selectedWorkOrderTypes.Count == allWorkOrderTypes.Count;
+    }
+
+    private void ToggleAllTypes()
+    {
+        if (selectAllTypes) { selectedWorkOrderTypes = allWorkOrderTypes.ToHashSet(); }
+        else { selectedWorkOrderTypes.Clear(); }
+    }
+    
+    private void EngineerSelectionChanged(string engineerId, bool isSelected)
+    {
+        if (isSelected) { selectedEngineerIds.Add(engineerId); }
+        else { selectedEngineerIds.Remove(engineerId); }
+        selectAllEngineers = selectedEngineerIds.Count == allEngineers.Count;
+    }
+
+    private void ToggleAllEngineers()
+    {
+        if (selectAllEngineers) { selectedEngineerIds = allEngineers.Select(e => e.Id).ToHashSet(); }
+        else { selectedEngineerIds.Clear(); }
+    }
+}

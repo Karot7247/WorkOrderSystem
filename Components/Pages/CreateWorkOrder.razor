@@ -1,0 +1,1373 @@
+﻿@page "/workorders/create"
+@page "/workorders/edit/{WorkOrderId:int}"
+@rendermode InteractiveServer
+
+@using System.ComponentModel.DataAnnotations
+@using Microsoft.AspNetCore.Authorization
+@using WorkOrderSystem.Data
+@using WorkOrderSystem.Models
+@using System.Security.Claims
+@using Microsoft.AspNetCore.Identity
+@using Microsoft.EntityFrameworkCore
+@using System.Web
+@using WorkOrderSystem.Components.Shared
+@using WorkOrderSystem.Services
+@using System.Net
+@using System.Net.Http.Json
+@using System.IO
+
+@attribute [Authorize]
+
+@inject IServiceScopeFactory ScopeFactory
+@inject AuthenticationStateProvider _authenticationStateProvider
+@inject NavigationManager _navigationManager
+@inject IWebHostEnvironment _webHostEnvironment
+@inject IConfiguration Configuration
+@inject IJSRuntime JSRuntime
+@inject IQuotationFileService QuotationFileSvc
+@inject ILogger<CreateWorkOrder> _logger
+@inject HttpClient Http
+
+<PageTitle>@(WorkOrderId == 0 ? "新增派工申請" : "編輯派工申請")</PageTitle>
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h3>@(WorkOrderId == 0 ? "新增派工申請" : "編輯派工申請")</h3>
+    @if (WorkOrderId > 0)
+    {
+        <button type="button" class="btn btn-outline-danger" @onclick="() => showRevokeModal = true">
+            <i class="bi bi-x-circle"></i> 撤銷工單
+        </button>
+    }
+</div>
+
+<p>請詳細填寫您需要協助的事項。</p>
+
+@if (!string.IsNullOrEmpty(errorMessage))
+{
+    <div class="alert alert-danger" role="alert">
+        @errorMessage
+    </div>
+}
+
+@if (isLoadingData)
+{
+    <p><em>正在載入資料...</em></p>
+}
+else
+{
+    @if (WorkOrderId == 0)
+    {
+        <div class="card border-info mb-4 shadow-sm bg-light">
+            <div class="card-header bg-info bg-opacity-25 text-dark fw-bold">
+                <i class="bi bi-magic text-primary"></i> 透過報價單快速建立工單
+            </div>
+            <div class="card-body py-3">
+                <div class="row g-2">
+                    <div class="col-md-3">
+                        <div class="input-group input-group-sm">
+                            <span class="input-group-text bg-white">年度</span>
+                            <select class="form-select" value="@importYear" @onchange="OnImportYearChangedAsync" disabled="@isLoadingImportQuotations">
+                                @foreach (var y in quotationYearOptions)
+                                {
+                                    <option value="@y">@y (@(y - 1911))</option>
+                                }
+                            </select>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="input-group input-group-sm">
+                            <span class="input-group-text bg-white"><i class="bi bi-funnel"></i></span>
+                            <input type="text" class="form-control" placeholder="過濾報價單 (輸入客戶/案名)"
+                                   @bind="importKeyword" @bind:event="oninput" @onkeyup="FilterImportQuotations" disabled="@isLoadingImportQuotations" />
+                        </div>
+                    </div>
+
+                    <div class="col-md-5">
+                        <div class="input-group input-group-sm">
+                            <select class="form-select" @bind="selectedImportQuotation" disabled="@isLoadingImportQuotations">
+                                @if (isLoadingImportQuotations)
+                                {
+                                    <option value="">載入中...</option>
+                                }
+                                else
+                                {
+                                    <option value="">-- 請選擇報價單 --</option>
+                                    @if (filteredImportQuotations != null)
+                                    {
+                                        foreach (var q in filteredImportQuotations)
+                                        {
+                                            <option value="@q.Value">@q.DisplayText</option>
+                                        }
+                                    }
+                                }
+                            </select>
+                            <button class="btn btn-primary" type="button" @onclick="ApplyImportDataAsync" disabled="@(string.IsNullOrEmpty(selectedImportQuotation) || isImportingData)">
+                                @if (isImportingData)
+                                {
+                                    <span class="spinner-border spinner-border-sm"></span>
+                                }
+                                else
+                                {
+                                    <span>匯入資料</span>
+                                }
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                @if (isLoadingImportQuotations)
+                {
+                    <div class="text-secondary small mt-2"><span class="spinner-border spinner-border-sm me-1"></span> 正在從伺服器讀取本年度報價單...</div>
+                }
+                @if (!string.IsNullOrEmpty(importMessage))
+                {
+                    <div class="text-success fw-bold small mt-2"><i class="bi bi-check-circle"></i> @importMessage</div>
+                }
+            </div>
+        </div>
+    }
+
+    <EditForm Model="workOrder" OnValidSubmit="HandleSubmit" FormName="@(WorkOrderId == 0 ? "CreateWorkOrder" : "EditWorkOrder")">
+        <DataAnnotationsValidator />
+
+        <div class="mb-3">
+            <label for="title" class="form-label">標題 (將作為照片資料夾名稱)</label>
+            <InputText id="title" class="form-control" @bind-Value="workOrder.Title" />
+            <ValidationMessage For="@(() => workOrder.Title)" />
+        </div>
+
+        <div class="mb-3">
+            <label for="customerName" class="form-label">客戶名稱 (將作為照片資料夾名稱)</label>
+            <InputText id="customerName" class="form-control" @bind-Value="workOrder.CustomerName" @onblur="LoadQuotationOptionsAsync" />
+            <ValidationMessage For="@(() => workOrder.CustomerName)" />
+        </div>
+
+        <div class="row mb-3">
+            <div class="col-md-6">
+                <label for="source" class="form-label">客源分類 (可選)</label>
+                <InputSelect id="source" class="form-select" @bind-Value="workOrder.Source">
+                    <option value="">-- 請選擇 --</option>
+                    <option value="原有客戶">原有客戶</option>
+                    <option value="網站">網站</option>
+                    <option value="客戶介紹">客戶介紹</option>
+                </InputSelect>
+            </div>
+            <div class="col-md-6">
+                <label for="address" class="form-label">地址 (可選)</label>
+                <div class="input-group">
+                    <InputText id="address" class="form-control" @bind-Value="workOrder.Address" />
+                    @if (!string.IsNullOrEmpty(workOrder.Address))
+                    {
+                        <a class="btn btn-outline-secondary" href="https://www.google.com/maps/search/?api=1&query={WebUtility.UrlEncode(workOrder.Address)}" target="_blank" title="在 Google 地圖上開啟">
+                            <i class="bi bi-geo-alt-fill"></i>
+                        </a>
+                    }
+                </div>
+            </div>
+        </div>
+
+        <div class="row mb-3">
+            <div class="col-md-6">
+                <label for="woContactNameInput" class="form-label">聯絡人 (可選)</label>
+                <InputText id="woContactNameInput"
+                           class="form-control"
+                           name="ignore_autofill_name"
+                           Value="@workOrder.ContactPerson"
+                           ValueChanged="@((string s) => OnContactPersonChanged(s))"
+                           ValueExpression="@(() => workOrder.ContactPerson)"
+                           list="contactPersonList"
+                           autocomplete="nope"
+                           placeholder="輸入或選擇歷史聯絡人" />
+
+                <datalist id="contactPersonList">
+                    @foreach (var item in historyContactItems)
+                    {
+                        <option value="@item.Name">歷史資料 | 電話: @item.Phone</option>
+                    }
+                </datalist>
+            </div>
+            <div class="col-md-6">
+                <label for="woContactPhoneInput" class="form-label">聯絡電話 (可選)</label>
+                <InputText id="woContactPhoneInput"
+                           class="form-control"
+                           name="ignore_autofill_phone"
+                           @bind-Value="workOrder.ContactPhone"
+                           autocomplete="nope" />
+            </div>
+        </div>
+
+        <div class="mb-3">
+            <label for="workOrderType" class="form-label">案件類型</label>
+            <InputSelect id="workOrderType" class="form-select" @bind-Value="workOrder.WorkOrderType">
+                <option value="">-- 請選擇 --</option>
+                <option value="維修">維修</option>
+                <option value="施工">施工</option>
+                <option value="報價">請求報價</option>
+            </InputSelect>
+            <ValidationMessage For="@(() => workOrder.WorkOrderType)" />
+        </div>
+
+        @* --- 關聯報價單區塊 --- *@
+        <div class="mb-3">
+            <label class="form-label">關聯報價單 (可選)</label>
+            <div class="row">
+                <div class="col-md-6 mb-2 mb-md-0">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <div class="form-check mb-0">
+                            <input class="form-check-input" type="checkbox" id="filterCustomerCheck"
+                                   checked="@filterQuotationsByCustomer"
+                                   @onchange="OnFilterCustomerChangedAsync"
+                                   disabled="@isLoadingQuotations" />
+                            <label class="form-check-label" for="filterCustomerCheck">
+                                僅顯示客戶 '@(workOrder.CustomerName ?? "...")'
+                            </label>
+                        </div>
+
+                        <div class="input-group input-group-sm w-auto">
+                            <span class="input-group-text bg-white border-end-0">年度</span>
+                            <select class="form-select border-start-0" value="@selectedQuotationYear" @onchange="OnQuotationYearChanged" disabled="@isLoadingQuotations">
+                                @foreach (var y in quotationYearOptions)
+                                {
+                                    <option value="@y">@y (@(y - 1911))</option>
+                                }
+                            </select>
+                        </div>
+                    </div>
+
+                    @if (string.IsNullOrWhiteSpace(workOrder.CustomerName) && filterQuotationsByCustomer)
+                    {
+                        <small class="text-warning d-block mb-2">(請先填寫客戶名稱)</small>
+                    }
+                </div>
+                <div class="col-md-6">
+                    <div class="input-group">
+                        <InputSelect id="quotationSelect" class="form-select"
+                                     Value="@workOrder.RelatedQuotationFileName"
+                                     ValueChanged="@((string s) => OnQuotationSelectedAsync(s))"
+                                     ValueExpression="@(() => workOrder.RelatedQuotationFileName)"
+                                     disabled="@(isLoadingQuotations)">
+                            <option value="">-- 無 --</option>
+                            @if (isLoadingQuotations)
+                            {
+                                <option disabled>讀取中...</option>
+                            }
+                            else if (availableQuotations != null)
+                            {
+                                @foreach (var quote in availableQuotations)
+                                {
+                                    <option value="@quote.Value">@quote.DisplayText</option>
+                                }
+                            }
+                        </InputSelect>
+
+                        <button class="btn btn-outline-secondary" type="button"
+                                @onclick="PreviewSelectedQuotationAsync"
+                                disabled="@(isLoadingQuotations || isPreviewingQuotation || string.IsNullOrWhiteSpace(workOrder.RelatedQuotationFileName))"
+                                title="預覽目前選中的報價單 (PDF)">
+                            @if (isPreviewingQuotation)
+                            {
+                                <span class="spinner-border spinner-border-sm"></span>
+                            }
+                            else
+                            {
+                                <i class="bi bi-eye"></i>
+                            }
+                        </button>
+                    </div>
+
+                    @if (isReadingContactInfo)
+                    {
+                        <div class="text-info small mt-1 ms-1">
+                            <span class="spinner-border spinner-border-sm"></span> 正在從報價單讀取聯絡資訊...
+                        </div>
+                    }
+                    @if (!string.IsNullOrEmpty(contactInfoMessage))
+                    {
+                        <div class="text-success small mt-1 ms-1">
+                            <i class="bi bi-magic"></i> @contactInfoMessage
+                        </div>
+                    }
+
+                    @if (isLoadingQuotations)
+                    {
+                        <div class="spinner-border spinner-border-sm text-secondary ms-2"></div>
+                    }
+                    @if (!string.IsNullOrWhiteSpace(quotationLoadError))
+                    {
+                        <div class="text-danger mt-1"><small>@quotationLoadError</small></div>
+                    }
+                    @if (!string.IsNullOrWhiteSpace(previewError))
+                    {
+                        <small class="text-danger mt-1">@previewError</small>
+                    }
+                </div>
+            </div>
+        </div>
+
+        <div class="mb-3">
+            <label for="description" class="form-label">
+                詳細說明 <span class="text-danger fw-bold ms-1">*必填</span>
+            </label>
+            <InputTextArea id="description" class="form-control" @bind-Value="workOrder.Description" rows="5" placeholder="請填寫詳細說明或匯入工程名稱..." />
+            <ValidationMessage For="@(() => workOrder.Description)" />
+        </div>
+
+        @* 附件區塊 *@
+        <div class="mb-3 border p-3 rounded bg-light">
+            <label class="form-label fw-bold"><i class="bi bi-paperclip"></i> 上傳附件 (支援照片、PDF、Word等一般檔案)</label>
+            <div>
+                <InputFile OnChange="HandleFileSelected" capture="environment" class="d-none" id="cameraInput" accept="image/*" disabled="@isProcessingPhotos" />
+                <InputFile OnChange="HandleFileSelected" multiple class="d-none" id="galleryInput" disabled="@isProcessingPhotos" />
+
+                <button type="button" class="btn btn-secondary me-2" onclick="document.getElementById('cameraInput').click()" disabled="@isProcessingPhotos">
+                    <i class="bi bi-camera-fill"></i> 拍照
+                </button>
+                <button type="button" class="btn btn-secondary" onclick="document.getElementById('galleryInput').click()" disabled="@isProcessingPhotos">
+                    <i class="bi bi-folder-plus"></i> 選擇檔案
+                </button>
+
+                @if (isProcessingPhotos)
+                {
+                    <div class="d-inline-block ms-2" style="vertical-align: middle;">
+                        <div class="spinner-border spinner-border-sm text-secondary" role="status"></div>
+                        <span class="text-muted ms-1">檔案處理中... (@filesProcessed / @totalFilesToProcess)</span>
+                    </div>
+                }
+            </div>
+
+            @if (previewPhotos.Any())
+            {
+                <div class="mt-3 d-flex flex-wrap" style="gap: 15px;">
+                    @foreach (var photo in previewPhotos)
+                    {
+                        <div class="position-relative border rounded shadow-sm bg-white" style="width: 140px; height: 140px;">
+                            @if (photo.IsImage)
+                            {
+                                <img src="@photo.Base64Data" class="img-thumbnail w-100 h-100 border-0" style="object-fit: cover; border-radius: 6px;" />
+                            }
+                            else
+                            {
+                                <div class="d-flex flex-column align-items-center justify-content-center h-100 px-2 text-center text-secondary">
+                                    <i class="bi bi-file-earmark-text-fill" style="font-size: 3rem;"></i>
+                                    <span class="small text-truncate w-100 mt-2" title="@photo.FileName">@photo.FileName</span>
+                                </div>
+                            }
+                            <button type="button" class="btn btn-danger btn-sm position-absolute top-0 end-0 m-1 rounded-circle"
+                                    aria-label="移除附件" @onclick="() => RemovePhoto(photo.Id)">
+                                <i class="bi bi-x"></i>
+                            </button>
+                        </div>
+                    }
+                </div>
+            }
+        </div>
+
+        @* ✨ 核心修改：所有人都能看到指派區塊，但一般人只能指派給自己 ✨ *@
+        <hr />
+        <h4>@(isManager || isSupervisor ? "直接指派" : "指派給自己")</h4>
+        <div class="mb-3 border p-3 rounded">
+            <div style="max-height: 250px; overflow-y: auto;">
+                <p class="form-label fw-bold">@(isManager || isSupervisor ? "選擇工程師 (可複選)" : "是否由您親自處理此工單？")</p>
+                <InputRadioGroup @bind-Value="primaryEngineerId">
+                    @foreach (var engineer in engineers)
+                    {
+                        var isSelected = selectedEngineers.GetValueOrDefault(engineer.Id);
+                        <div class="d-flex align-items-center mb-2">
+                            <div class="form-check flex-grow-1">
+                                <input type="checkbox" class="form-check-input" id="@($"assign-{engineer.Id}")"
+                                       checked="@isSelected"
+                                       @onchange="@((ChangeEventArgs __e) => { 
+                                           bool isChecked = (bool)(__e.Value ?? false);
+                                           selectedEngineers[engineer.Id] = isChecked; 
+                                           // 若只有一位工程師被勾選，自動將其設為主要負責人
+                                           if (isChecked && engineers.Count == 1) { primaryEngineerId = engineer.Id; }
+                                           if (!isChecked && primaryEngineerId == engineer.Id) { primaryEngineerId = null; }
+                                           StateHasChanged(); 
+                                       })" />
+                                <label for="@($"assign-{engineer.Id}")" class="form-check-label">
+                                    @engineer.FullName @(engineer.Id == currentUser?.Id && engineers.Count > 1 ? "(自己)" : "")
+                                </label>
+                            </div>
+                            
+                            @* 只有當選單裡有超過1位工程師時，才需要顯示「設為主要」的單選框 *@
+                            <div class="form-check ms-3" style="@(engineers.Count == 1 ? "display:none;" : "")">
+                                <InputRadio id="@($"primary-{engineer.Id}")" Value="@engineer.Id" class="form-check-input" disabled="@(!isSelected)" />
+                                <label for="@($"primary-{engineer.Id}")" class="form-check-label"><small>設為主要</small></label>
+                            </div>
+                        </div>
+                    }
+                </InputRadioGroup>
+            </div>
+            
+            @* 給一般使用者的提示 *@
+            @if (!isManager && !isSupervisor)
+            {
+                <small class="text-muted mt-2 d-block"><i class="bi bi-info-circle"></i> 一般權限僅能將工單指派給自己。如需分派給其他工程師，請由管理者或主管操作。</small>
+            }
+        </div>
+
+        <div class="d-flex gap-2 mt-4">
+            <button type="submit" class="btn btn-primary flex-grow-1" disabled="@isProcessingPhotos">
+                @(WorkOrderId == 0 ? "提交申請" : "儲存變更")
+            </button>
+        </div>
+    </EditForm>
+}
+
+<PdfPreviewModal IsVisible="isPdfModalVisible"
+                 Base64Data="@pdfPreviewBase64Data"
+                 FileName="@pdfPreviewFileName"
+                 OnClose="() => isPdfModalVisible = false" />
+
+@if (showRevokeModal)
+{
+    <div class="modal fade show" tabindex="-1" role="dialog" style="display: block; background-color: rgba(0,0,0,0.5);">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header bg-danger text-white">
+                    <h5 class="modal-title"><i class="bi bi-exclamation-triangle-fill"></i> 撤銷工單確認</h5>
+                    <button type="button" class="btn-close btn-close-white" @onclick="() => showRevokeModal = false"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="fw-bold">您確定要撤銷此工單嗎？</p>
+                    <p class="text-muted small">撤銷後工單狀態將變更為「已取消」，此操作無法復原。</p>
+
+                    <div class="mb-3">
+                        <label class="form-label fw-bold required">撤銷原因 (必填)：</label>
+                        <textarea class="form-control" @bind="revokeReason" rows="3" placeholder="請輸入撤銷原因..."></textarea>
+                    </div>
+
+                    @if (!string.IsNullOrEmpty(revokeError))
+                    {
+                        <div class="alert alert-danger py-2">@revokeError</div>
+                    }
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" @onclick="() => showRevokeModal = false">取消</button>
+                    <button type="button" class="btn btn-danger" @onclick="ConfirmRevokeAsync" disabled="@isRevoking">
+                        @if (isRevoking)
+                        {
+                             <span class="spinner-border spinner-border-sm"></span> <span> 處理中...</span>
+                        }
+                        else
+                        {
+                            <span>確認撤銷</span>
+                        }
+                    </button>
+                </div>
+             </div>
+        </div>
+    </div>
+}
+
+
+@code {
+    [Parameter]
+    public int WorkOrderId { get; set; }
+
+    private WorkOrder workOrder = new() { Source = "原有客戶", WorkOrderType = "維修" };
+    private string? errorMessage;
+    private bool isManager = false;
+    private bool isSupervisor = false;
+    private List<AppUser> engineers = new();
+    private Dictionary<string, bool> selectedEngineers = new();
+    private string? primaryEngineerId;
+    private AppUser? currentUser;
+
+    private List<PreviewPhoto> previewPhotos = new();
+    private bool isProcessingPhotos = false;
+    private int totalFilesToProcess = 0;
+    private int filesProcessed = 0;
+    private const int MaxAllowedFiles = 100;
+
+    private int importYear = DateTime.Now.Year;
+    private string importKeyword = "";
+    private string? selectedImportQuotation;
+    private List<QuotationSelectItem>? allImportQuotationsForYear; 
+    private List<QuotationSelectItem>? filteredImportQuotations;
+    private bool isLoadingImportQuotations = false;
+    private bool isImportingData = false;
+    private string? importMessage = null;
+
+    private async Task OnImportYearChangedAsync(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), out int y))
+        {
+            importYear = y;
+            await LoadImportQuotationsAsync();
+        }
+    }
+
+    private async Task LoadImportQuotationsAsync()
+    {
+        isLoadingImportQuotations = true;
+        importMessage = null;
+        selectedImportQuotation = "";
+        StateHasChanged();
+
+        await Task.Yield(); 
+
+        try
+        {
+            int? targetRocYear = importYear - 1911;
+            allImportQuotationsForYear = await QuotationFileSvc.ListQuotationsAsync(filterByCustomer: false, customerName: null, year: targetRocYear);
+            FilterImportQuotations(); 
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "載入年度報價單失敗");
+        }
+        finally
+        {
+            isLoadingImportQuotations = false;
+            StateHasChanged();
+        }
+    }
+
+    private void FilterImportQuotations()
+    {
+        if (allImportQuotationsForYear == null)
+        {
+            filteredImportQuotations = new List<QuotationSelectItem>();
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(importKeyword))
+        {
+            filteredImportQuotations = allImportQuotationsForYear;
+        }
+        else
+        {
+            var kw = importKeyword.Trim();
+            filteredImportQuotations = allImportQuotationsForYear
+                .Where(q => q.DisplayText.Contains(kw, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+        }
+
+        if (!string.IsNullOrEmpty(selectedImportQuotation) && !filteredImportQuotations.Any(q => q.Value == selectedImportQuotation))
+        {
+            selectedImportQuotation = "";
+        }
+    }
+
+    private async Task ApplyImportDataAsync()
+    {
+        if (string.IsNullOrWhiteSpace(selectedImportQuotation)) return;
+        isImportingData = true;
+        importMessage = null;
+        StateHasChanged();
+
+        try
+        {
+            var info = await QuotationFileSvc.GetContactInfoFromExcelAsync(selectedImportQuotation);
+            if (!string.IsNullOrWhiteSpace(info.CustomerName)) workOrder.CustomerName = info.CustomerName;
+            if (!string.IsNullOrWhiteSpace(info.ContactPerson)) workOrder.ContactPerson = info.ContactPerson;
+            if (!string.IsNullOrWhiteSpace(info.ContactPhone)) workOrder.ContactPhone = info.ContactPhone;
+            
+            var fileNameWithoutExt = Path.GetFileNameWithoutExtension(selectedImportQuotation);
+            string projectName = fileNameWithoutExt; 
+
+            var parts = fileNameWithoutExt.Split(new[] { '-', '_' }, 3, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 3)
+            {
+                projectName = parts[2].Trim();
+            }
+            else if (parts.Length == 2)
+            {
+                projectName = parts[1].Trim();
+            }
+
+            if (string.IsNullOrWhiteSpace(workOrder.Title))
+            {
+                workOrder.Title = projectName;
+            }
+
+            if (string.IsNullOrWhiteSpace(workOrder.Description))
+            {
+                workOrder.Description = projectName;
+            }
+            else if (!workOrder.Description.Contains(projectName))
+            {
+                workOrder.Description = projectName + "\n\n" + workOrder.Description;
+            }
+
+            workOrder.RelatedQuotationFileName = selectedImportQuotation;
+            selectedQuotationYear = importYear; 
+
+            importMessage = "資料匯入成功！請確認下方欄位。";
+            await LoadQuotationOptionsAsync();
+        }
+        catch (Exception ex)
+        {
+            importMessage = $"匯入失敗: {ex.Message}";
+        }
+        finally
+        {
+            isImportingData = false;
+            StateHasChanged();
+        }
+    }
+
+    private List<QuotationSelectItem>? availableQuotations;
+    private bool filterQuotationsByCustomer = true;
+    private bool isLoadingQuotations = false;
+    private string? quotationLoadError = null;
+    private bool isPreviewingQuotation = false;
+    private string? previewError = null;
+    private bool isPdfModalVisible = false;
+    private string? pdfPreviewBase64Data = null;
+    private string? pdfPreviewFileName = null;
+
+    private int selectedQuotationYear;
+    private List<int> quotationYearOptions = new();
+    private class ContactHistoryItem
+    {
+        public string Name { get; set; } = "";
+        public string Phone { get; set; } = "";
+    }
+    private List<ContactHistoryItem> historyContactItems = new();
+
+    private bool isReadingContactInfo = false;
+    private string? contactInfoMessage = null;
+
+    private bool isLoadingData = true;
+    private bool showRevokeModal = false;
+    private string revokeReason = "";
+    private string? revokeError;
+    private bool isRevoking = false;
+
+    private class PreviewPhoto
+    {
+        public string Id { get; set; } = Guid.NewGuid().ToString();
+        public string FileName { get; set; } = string.Empty;
+        public string Base64Data { get; set; } = string.Empty;
+        public bool IsImage { get; set; }
+        public string ContentType { get; set; } = string.Empty;
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        using var scope = ScopeFactory.CreateScope();
+        var userManager = scope.ServiceProvider.GetRequiredService<UserManager<AppUser>>();
+        var authState = await _authenticationStateProvider.GetAuthenticationStateAsync();
+        var user = authState.User;
+        currentUser = await userManager.GetUserAsync(user);
+        
+        if (currentUser != null)
+        {
+            isManager = currentUser.IsManager;
+            isSupervisor = currentUser.IsSupervisor;
+
+            // ✨ 根據權限載入不同名單 ✨
+            if (isManager || isSupervisor)
+            {
+                // 管理者或主管可以看到所有工程師
+                engineers = await userManager.Users.Where(u => u.IsEngineer).OrderBy(u => u.FullName).ToListAsync();
+            }
+            else
+            {
+                // 一般使用者只能看到自己
+                engineers = new List<AppUser> { currentUser };
+            }
+            selectedEngineers = engineers.ToDictionary(eng => eng.Id, eng => false);
+        }
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        isLoadingData = true;
+        using var scope = ScopeFactory.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
+        if (WorkOrderId > 0) 
+        {
+            var dbWorkOrder = await context.WorkOrders
+              .AsNoTracking()
+              .Include(wo => wo.Assignments).ThenInclude(a => a.User) // 加入 User 關聯以便獲取已指派的工程師
+              .FirstOrDefaultAsync(wo => wo.Id == WorkOrderId);
+              
+            if (dbWorkOrder == null) { _navigationManager.NavigateTo("/"); return; }
+
+            // 若為一般使用者編輯已存在的工單，需將「原本就已經被指派」的工程師一併加入名單，避免編輯時將別人的指派洗掉
+            if (!isManager && !isSupervisor)
+            {
+                foreach(var assignment in dbWorkOrder.Assignments)
+                {
+                    if (assignment.User != null && !engineers.Any(e => e.Id == assignment.UserId))
+                    {
+                        engineers.Add(assignment.User);
+                        selectedEngineers[assignment.UserId] = false;
+                    }
+                }
+            }
+
+            workOrder = new WorkOrder
+                {
+                    Id = dbWorkOrder.Id,
+                    Title = dbWorkOrder.Title,
+                    CustomerName = dbWorkOrder.CustomerName,
+                    Source = dbWorkOrder.Source,
+                    Address = dbWorkOrder.Address,
+                    ContactPerson = dbWorkOrder.ContactPerson,
+                    ContactPhone = dbWorkOrder.ContactPhone,
+                    WorkOrderType = dbWorkOrder.WorkOrderType,
+                    Description = dbWorkOrder.Description,
+                    RelatedQuotationFileName = dbWorkOrder.RelatedQuotationFileName,
+                    RequesterId = dbWorkOrder.RequesterId,
+                    CreatedAt = dbWorkOrder.CreatedAt,
+                    Status = dbWorkOrder.Status,
+                };
+
+            // 載入目前已勾選的工程師狀態
+            if (engineers.Any()) { selectedEngineers = engineers.ToDictionary(eng => eng.Id, eng => false); }
+            foreach (var assignment in dbWorkOrder.Assignments) 
+            { 
+                if (selectedEngineers.ContainsKey(assignment.UserId)) 
+                { 
+                    selectedEngineers[assignment.UserId] = true;
+                    if (assignment.IsPrimary) { primaryEngineerId = assignment.UserId; } 
+                } 
+            }
+        }
+        else 
+        {
+            workOrder = new WorkOrder() { Source = "原有客戶", WorkOrderType = "維修" };
+            if (engineers.Any()) { selectedEngineers = engineers.ToDictionary(eng => eng.Id, eng => false); }
+            primaryEngineerId = null;
+            availableQuotations = new List<QuotationSelectItem>();
+        }
+
+        int currentY = DateTime.Now.Year;
+        quotationYearOptions.Clear();
+        for (int y = currentY + 1; y >= 2020; y--)
+        {
+            quotationYearOptions.Add(y);
+        }
+
+        if (WorkOrderId > 0)
+        {
+            selectedQuotationYear = workOrder.CreatedAt.Year;
+        }
+        else
+        {
+            selectedQuotationYear = currentY;
+        }
+
+        if (!quotationYearOptions.Contains(selectedQuotationYear))
+        {
+            quotationYearOptions.Add(selectedQuotationYear);
+            quotationYearOptions = quotationYearOptions.OrderByDescending(x => x).ToList();
+        }
+
+        isLoadingData = false;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            if (!string.IsNullOrWhiteSpace(workOrder.CustomerName))
+            {
+                _ = LoadQuotationOptionsAsync().ContinueWith(t => InvokeAsync(StateHasChanged));
+            }
+
+            if (WorkOrderId == 0)
+            {
+                _ = LoadImportQuotationsAsync().ContinueWith(t => InvokeAsync(StateHasChanged));
+            }
+        }
+    }
+
+    private async Task ConfirmRevokeAsync()
+    {
+        if (string.IsNullOrWhiteSpace(revokeReason))
+        {
+            revokeError = "請填寫撤銷原因。";
+            return;
+        }
+
+        isRevoking = true;
+        revokeError = null;
+        StateHasChanged();
+        try
+        {
+            using var scope = ScopeFactory.CreateScope();
+            var context = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var orderToUpdate = await context.WorkOrders.FindAsync(WorkOrderId);
+
+            if (orderToUpdate != null)
+            {
+                orderToUpdate.Status = "已取消";
+                orderToUpdate.UpdatedAt = DateTime.Now;
+
+                context.WorkOrderLogs.Add(new WorkOrderLog
+                    {
+                        WorkOrderId = orderToUpdate.Id,
+                        OperatorId = currentUser?.Id,
+                        Action = "撤銷工單",
+                        Comment = $"撤銷原因：{revokeReason}",
+                        Timestamp = DateTime.Now
+                    });
+                await context.SaveChangesAsync();
+
+                string redirectUrl = "/myrequests";
+                if (isManager || (currentUser?.IsSupervisor ?? false)) { redirectUrl = "/manager/dashboard"; }
+                _navigationManager.NavigateTo(redirectUrl, forceLoad: true);
+            }
+            else
+            {
+                revokeError = "找不到工單，無法撤銷。";
+                isRevoking = false;
+            }
+        }
+        catch (Exception ex)
+        {
+            revokeError = $"撤銷失敗：{ex.Message}";
+            _logger.LogError(ex, "撤銷工單失敗");
+            isRevoking = false;
+        }
+    }
+
+    private async Task LoadQuotationOptionsAsync()
+    {
+        if (workOrder == null || (filterQuotationsByCustomer && string.IsNullOrWhiteSpace(workOrder.CustomerName)))
+        {
+            availableQuotations = new List<QuotationSelectItem>();
+            historyContactItems.Clear();
+
+            if (filterQuotationsByCustomer && string.IsNullOrWhiteSpace(workOrder.CustomerName) && WorkOrderId == 0)
+            {
+                quotationLoadError = "請填寫客戶名稱後點擊欄位外，即可載入報價單與歷史資料。";
+            }
+            else
+            {
+                quotationLoadError = null;
+            }
+            isLoadingQuotations = false;
+            StateHasChanged();
+            return;
+        }
+
+        isLoadingQuotations = true;
+        quotationLoadError = null;
+        availableQuotations = null;
+        previewError = null;
+        StateHasChanged();
+
+        try
+        {
+            int? targetRocYear = selectedQuotationYear - 1911;
+
+            availableQuotations = await QuotationFileSvc.ListQuotationsAsync(
+                filterByCustomer: filterQuotationsByCustomer,
+                customerName: filterQuotationsByCustomer ? workOrder.CustomerName : null,
+                year: targetRocYear
+            );
+            using var scope = ScopeFactory.CreateScope();
+            var context = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
+            var history = await context.WorkOrders
+                .AsNoTracking()
+                .Where(w => w.CustomerName == workOrder.CustomerName)
+                .OrderByDescending(w => w.CreatedAt)
+                .Select(w => new { w.ContactPerson, w.ContactPhone })
+                .ToListAsync();
+
+            if (history.Any())
+            {
+                historyContactItems = history
+                    .Where(x => !string.IsNullOrWhiteSpace(x.ContactPerson))
+                    .GroupBy(x => x.ContactPerson)
+                    .Select(g => g.First())
+                    .Select(x => new ContactHistoryItem { Name = x.ContactPerson, Phone = x.ContactPhone })
+                    .ToList();
+                if (string.IsNullOrWhiteSpace(workOrder.ContactPerson) || string.IsNullOrWhiteSpace(workOrder.ContactPhone))
+                {
+                    var latest = history.First();
+                    if (string.IsNullOrWhiteSpace(workOrder.ContactPerson) && !string.IsNullOrWhiteSpace(latest.ContactPerson))
+                    {
+                        workOrder.ContactPerson = latest.ContactPerson;
+                    }
+
+                    if (string.IsNullOrWhiteSpace(workOrder.ContactPhone) && !string.IsNullOrWhiteSpace(latest.ContactPhone))
+                    {
+                        workOrder.ContactPhone = latest.ContactPhone;
+                    }
+                }
+            }
+        }
+        catch (ApplicationException appEx) { quotationLoadError = $"讀取列表錯誤：{appEx.Message}"; _logger.LogError(appEx, "讀取列表 ApplicationException"); }
+        catch (Exception ex) { quotationLoadError = $"讀取列表錯誤：{ex.Message}"; _logger.LogError(ex, "讀取列表 Exception"); }
+        finally { isLoadingQuotations = false; StateHasChanged(); }
+    }
+
+    private async Task OnQuotationYearChanged(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), out int y))
+        {
+            selectedQuotationYear = y;
+            await LoadQuotationOptionsAsync();
+        }
+    }
+
+    private async Task OnFilterCustomerChangedAsync(ChangeEventArgs e) { if (e.Value is bool value) { filterQuotationsByCustomer = value; await LoadQuotationOptionsAsync(); } }
+
+    private void OnContactPersonChanged(string newValue)
+    {
+        workOrder.ContactPerson = newValue;
+        var matchedHistory = historyContactItems.FirstOrDefault(x => x.Name == newValue);
+        if (matchedHistory != null && !string.IsNullOrWhiteSpace(matchedHistory.Phone))
+        {
+            workOrder.ContactPhone = matchedHistory.Phone;
+        }
+    }
+
+    private async Task OnQuotationSelectedAsync(string fileName)
+    {
+        workOrder.RelatedQuotationFileName = fileName;
+        contactInfoMessage = null;
+
+        if (string.IsNullOrWhiteSpace(fileName)) return;
+
+        isReadingContactInfo = true;
+        StateHasChanged();
+        try
+        {
+            var info = await QuotationFileSvc.GetContactInfoFromExcelAsync(fileName);
+            bool updated = false;
+            var msgParts = new List<string>();
+
+            if (!string.IsNullOrWhiteSpace(info.CustomerName))
+            {
+                workOrder.CustomerName = info.CustomerName;
+                msgParts.Add($"客戶: {info.CustomerName}");
+                updated = true;
+            }
+
+            if (!string.IsNullOrWhiteSpace(info.ContactPerson))
+            {
+                workOrder.ContactPerson = info.ContactPerson;
+                msgParts.Add($"聯絡人: {info.ContactPerson}");
+                updated = true;
+            }
+
+            if (!string.IsNullOrWhiteSpace(info.ContactPhone))
+            {
+                workOrder.ContactPhone = info.ContactPhone;
+                msgParts.Add($"電話: {info.ContactPhone}");
+                updated = true;
+            }
+
+            if (updated)
+            {
+                contactInfoMessage = "已從報價單自動帶入：" + string.Join(" / ", msgParts);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"讀取報價單資訊失敗: {ex.Message}");
+        }
+        finally
+        {
+            isReadingContactInfo = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task PreviewSelectedQuotationAsync()
+    {
+        await ShowPdfPreviewModalAsync(workOrder?.RelatedQuotationFileName);
+    }
+
+    private async Task ShowPdfPreviewModalAsync(string? fileNameWithoutExtension)
+    {
+        if (string.IsNullOrWhiteSpace(fileNameWithoutExtension))
+        {
+            previewError = "請先選擇一個報價單。";
+            return;
+        }
+
+        isPreviewingQuotation = true;
+        previewError = null;
+        pdfPreviewBase64Data = null;
+        pdfPreviewFileName = null;
+        StateHasChanged();
+
+        try
+        {
+            string encodedFileName = HttpUtility.UrlEncode(fileNameWithoutExtension);
+            string relativeUrl = $"/api/download/preview/quotation.pdf?fileName={encodedFileName}";
+            string absoluteApiUrl = _navigationManager.ToAbsoluteUri(relativeUrl).ToString();
+
+            _logger.LogInformation("準備呼叫 API 獲取 PDF Base64: {Url}", absoluteApiUrl);
+
+            var response = await Http.GetAsync(absoluteApiUrl);
+            if (response.IsSuccessStatusCode)
+            {
+                var pdfResponse = await response.Content.ReadFromJsonAsync<PdfPreviewResponse?>();
+                if (pdfResponse != null && !string.IsNullOrEmpty(pdfResponse.Base64Data))
+                {
+                    _logger.LogInformation("成功獲取 Base64 資料 for {FileName}", pdfResponse.FileName);
+                    pdfPreviewBase64Data = pdfResponse.Base64Data;
+                    pdfPreviewFileName = pdfResponse.FileName;
+                    isPdfModalVisible = true;
+                }
+                else
+                {
+                    previewError = pdfResponse?.ErrorMessage ?? "API 返回成功但資料為空。";
+                    _logger.LogWarning("API 返回 200 OK 但 JSON 資料為空或無效: {Error}", previewError);
+                }
+            }
+            else
+            {
+                PdfPreviewResponse? errorResponse = null;
+                try { errorResponse = await response.Content.ReadFromJsonAsync<PdfPreviewResponse?>(); }
+                catch (Exception jsonEx) { _logger.LogError(jsonEx, "無法解析失敗回應的 JSON Body。"); }
+                previewError = errorResponse?.ErrorMessage ?? $"API 請求失敗，狀態碼: {response.StatusCode}";
+                _logger.LogWarning("API 請求失敗: {StatusCode}, 訊息: {Error}", response.StatusCode, previewError);
+            }
+        }
+        catch (HttpRequestException httpEx)
+        {
+            _logger.LogError(httpEx, "ShowPdfPreviewModalAsync: 呼叫 API 時發生 HttpRequestException for {FileName}", fileNameWithoutExtension);
+            previewError = $"網路請求錯誤: {httpEx.Message}";
+        }
+        catch (Exception ex)
+        {
+            previewError = $"準備預覽時發生未預期錯誤: {ex.Message}";
+            _logger.LogError(ex, "ShowPdfPreviewModalAsync error for {FileName}", fileNameWithoutExtension);
+        }
+        finally
+        {
+            isPreviewingQuotation = false;
+            StateHasChanged();
+        }
+    }
+
+    public class PdfPreviewResponse
+    {
+        public string? Base64Data { get; set; }
+        public string? FileName { get; set; }
+        public string? ErrorMessage { get; set; }
+    }
+
+    private async Task HandleFileSelected(InputFileChangeEventArgs e)
+    {
+        errorMessage = null;
+        IReadOnlyList<IBrowserFile> selectedFiles;
+
+        if (e.FileCount > MaxAllowedFiles)
+        {
+            errorMessage = $"您一次最多只能選取 {MaxAllowedFiles} 個檔案。系統將只處理前 {MaxAllowedFiles} 個。";
+            selectedFiles = e.GetMultipleFiles(MaxAllowedFiles);
+        }
+        else
+        {
+            selectedFiles = e.GetMultipleFiles(MaxAllowedFiles);
+        }
+
+        isProcessingPhotos = true;
+        totalFilesToProcess = selectedFiles.Count;
+        filesProcessed = 0;
+        await InvokeAsync(StateHasChanged);
+
+        foreach (var file in selectedFiles)
+        {
+            try
+            {
+                // ✨ 圖片/文件雙軌處理邏輯 ✨
+                bool isImage = file.ContentType.StartsWith("image/") && file.ContentType != "image/svg+xml";
+                byte[] buffer;
+                string base64;
+
+                if (isImage)
+                {
+                    // 👉 圖片：進行壓縮
+                    var resizedImageFile = await file.RequestImageFileAsync("image/jpeg", 1280, 1280);
+                    using var ms = new MemoryStream();
+                    await resizedImageFile.OpenReadStream(15 * 1024 * 1024).CopyToAsync(ms);
+                    buffer = ms.ToArray();
+                    base64 = $"data:image/jpeg;base64,{Convert.ToBase64String(buffer)}";
+                }
+                else
+                {
+                    // 👉 文件：不壓縮，允許最大 20MB
+                    using var ms = new MemoryStream();
+                    await file.OpenReadStream(20 * 1024 * 1024).CopyToAsync(ms); 
+                    buffer = ms.ToArray();
+                    base64 = $"data:{file.ContentType};base64,{Convert.ToBase64String(buffer)}";
+                }
+
+                previewPhotos.Add(new PreviewPhoto 
+                { 
+                    FileName = file.Name, 
+                    Base64Data = base64,
+                    IsImage = isImage,
+                    ContentType = file.ContentType
+                });
+            }
+            catch (Exception ex)
+            {
+                errorMessage = $"處理 '{file.Name}' 錯誤: {ex.Message}";
+                _logger.LogError(ex, "處理檔案 '{FileName}' 時發生錯誤", file.Name);
+            }
+            finally
+            {
+                filesProcessed++;
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        isProcessingPhotos = false;
+    }
+
+    private void RemovePhoto(string photoId) { var photoToRemove = previewPhotos.FirstOrDefault(p => p.Id == photoId);
+        if (photoToRemove != null) { previewPhotos.Remove(photoToRemove); } }
+    private string SanitizeFolderName(string name) { if (string.IsNullOrWhiteSpace(name)) return "Uncategorized";
+        string invalidChars = new string(Path.GetInvalidFileNameChars()) + new string(Path.GetInvalidPathChars()); foreach (char c in invalidChars) { name = name.Replace(c, '_');
+        } return name.Trim(); }
+
+    private async Task HandleSubmit()
+    {
+        errorMessage = null;
+
+        if (string.IsNullOrWhiteSpace(workOrder.Description))
+        {
+            errorMessage = "「詳細說明」為必填欄位，請確實填寫。";
+            await JSRuntime.InvokeVoidAsync("window.scrollTo", 0, 0);
+            return;
+        }
+
+        var authState = await _authenticationStateProvider.GetAuthenticationStateAsync();
+        var user = authState.User;
+        var userId = user.FindFirst(c => c.Type == ClaimTypes.NameIdentifier)?.Value;
+        if (string.IsNullOrEmpty(userId) || currentUser == null)
+        {
+            errorMessage = "錯誤：無法驗證您的使用者身份。";
+            return;
+        }
+
+        bool isNewWorkOrder = (WorkOrderId == 0);
+        string redirectUrl = "/myrequests";
+        using (var scope = ScopeFactory.CreateScope())
+        {
+            var context = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var userManager = scope.ServiceProvider.GetRequiredService<UserManager<AppUser>>();
+            var lineNotifyService = scope.ServiceProvider.GetRequiredService<LineNotifyService>();
+
+            try
+            {
+                WorkOrder entityToSave;
+                bool assignmentChanged = false;
+                bool contentChanged = false;
+                List<AppUser> engineersToNotifyOnChange = new List<AppUser>();
+                List<AppUser> engineersToNotifyOnAssign = new List<AppUser>();
+                
+                if (isNewWorkOrder)
+                {
+                    entityToSave = workOrder;
+                    entityToSave.RequesterId = userId;
+                    entityToSave.CreatedAt = DateTime.Now;
+                    context.WorkOrders.Add(entityToSave);
+                    contentChanged = true;
+                }
+                else 
+                {
+                    entityToSave = await context.WorkOrders
+                      .Include(wo => wo.Assignments)
+                      .FirstOrDefaultAsync(wo => wo.Id == WorkOrderId);
+
+                    if (entityToSave == null) { errorMessage = "找不到要更新的工單"; return; }
+
+                    contentChanged = entityToSave.Title != workOrder.Title ||
+                  entityToSave.CustomerName != workOrder.CustomerName ||
+                  entityToSave.Description != workOrder.Description ||
+                  entityToSave.Address != workOrder.Address ||
+                  entityToSave.ContactPerson != workOrder.ContactPerson ||
+                  entityToSave.ContactPhone != workOrder.ContactPhone ||
+                  entityToSave.WorkOrderType != workOrder.WorkOrderType ||
+                  entityToSave.Source != workOrder.Source ||
+                  entityToSave.RelatedQuotationFileName != workOrder.RelatedQuotationFileName;
+                    
+                    entityToSave.Title = workOrder.Title;
+                    entityToSave.CustomerName = workOrder.CustomerName;
+                    entityToSave.ContactPerson = workOrder.ContactPerson;
+                    entityToSave.ContactPhone = workOrder.ContactPhone;
+                    entityToSave.WorkOrderType = workOrder.WorkOrderType;
+                    entityToSave.Description = workOrder.Description;
+                    entityToSave.Source = workOrder.Source;
+                    entityToSave.Address = workOrder.Address;
+                    entityToSave.RelatedQuotationFileName = workOrder.RelatedQuotationFileName;
+                }
+
+                entityToSave.UpdatedAt = DateTime.Now;
+                
+                // ✨ 解除所有權限的身分檢查，讓一般使用者的指派也能進入這段邏輯 ✨
+                var selectedIds = selectedEngineers.Where(kv => kv.Value).Select(kv => kv.Key).ToList();
+                
+                if (selectedIds.Any())
+                {
+                    if (string.IsNullOrEmpty(primaryEngineerId)) 
+                    { 
+                        if (selectedIds.Count == 1) { primaryEngineerId = selectedIds.First(); }
+                        else { errorMessage = "請指定主要負責人。"; StateHasChanged(); return; }
+                    }
+                    if (!selectedIds.Contains(primaryEngineerId)) 
+                    { 
+                        errorMessage = "主要負責人必須在已選工程師中。"; StateHasChanged(); return; 
+                    }
+                }
+
+                if (!isNewWorkOrder)
+                {
+                    var existingAssignments = entityToSave.Assignments.ToList();
+                    var existingAssignedIds = existingAssignments.Select(a => a.UserId).ToHashSet();
+                    var newAssignedIds = selectedIds.ToHashSet();
+                    assignmentChanged = !existingAssignedIds.SetEquals(newAssignedIds);
+                    
+                    if (!assignmentChanged) { 
+                        var existingPrimaryId = existingAssignments.FirstOrDefault(a => a.IsPrimary)?.UserId; 
+                        assignmentChanged = existingPrimaryId != primaryEngineerId; 
+                    }
+
+                    if (assignmentChanged)
+                    {
+                        var newEngineerIds = newAssignedIds.Where(id => !existingAssignedIds.Contains(id)).ToList();
+                        engineersToNotifyOnAssign = await context.Users.Where(u => newEngineerIds.Contains(u.Id)).ToListAsync();
+                        
+                        if (contentChanged) { 
+                            var allAffectedIds = existingAssignedIds.Union(newAssignedIds); 
+                            engineersToNotifyOnChange = await context.Users.Where(u => allAffectedIds.Contains(u.Id)).ToListAsync(); 
+                        }
+                        
+                        context.WorkOrderAssignees.RemoveRange(existingAssignments);
+                        entityToSave.Assignments.Clear();
+                        foreach (var engineerId in selectedIds) { 
+                            entityToSave.Assignments.Add(new WorkOrderAssignee { UserId = engineerId, IsPrimary = (engineerId == primaryEngineerId) }); 
+                        }
+                    }
+                    else if (contentChanged && entityToSave.Status == "處理中")
+                    {
+                        engineersToNotifyOnChange = await context.WorkOrderAssignees
+                                       .Where(a => a.WorkOrderId == entityToSave.Id)
+                                       .Select(a => a.User)
+                                       .Where(u => u != null)
+                                       .ToListAsync();
+                    }
+                }
+                else
+                {
+                    assignmentChanged = selectedIds.Any();
+                    foreach (var engineerId in selectedIds) { 
+                        entityToSave.Assignments.Add(new WorkOrderAssignee { UserId = engineerId, IsPrimary = (engineerId == primaryEngineerId) }); 
+                    }
+                    if (assignmentChanged) { 
+                        engineersToNotifyOnAssign = await context.Users.Where(u => selectedIds.Contains(u.Id)).ToListAsync(); 
+                    }
+                }
+
+                if (assignmentChanged && selectedIds.Any() && entityToSave.Status != "處理中") { 
+                    entityToSave.Status = "處理中"; 
+                    entityToSave.AssignmentDate = DateTime.Now; 
+                }
+                else if (assignmentChanged && !selectedIds.Any() && entityToSave.Status == "處理中") { 
+                    entityToSave.Status = "待指派"; 
+                    entityToSave.AssignmentDate = null; 
+                }
+
+                if (isNewWorkOrder && !selectedIds.Any()) { entityToSave.Status = "待指派"; }
+
+                if (isNewWorkOrder || contentChanged || assignmentChanged)
+                {
+                    var logAction = isNewWorkOrder ? "建立工單" : "編輯工單";
+                    entityToSave.Logs.Add(new WorkOrderLog
+                        {
+                            OperatorId = userId,
+                            Action = logAction,
+                            Timestamp = DateTime.Now
+                        });
+                }
+
+                await context.SaveChangesAsync();
+                workOrder.Id = entityToSave.Id;
+
+                if (previewPhotos.Any())
+                {
+                    var uploadsRoot = Configuration["FileStorageSettings:UploadsRootPath"];
+                    if (string.IsNullOrEmpty(uploadsRoot))
+                    {
+                        _logger.LogError("FileStorageSettings:UploadsRootPath 未在 appsettings.json 中設定。");
+                        errorMessage = "嚴重錯誤：檔案儲存路徑(NAS)設定遺失，無法上傳照片。";
+                        return;
+                    }
+
+                    var customerFolderName = SanitizeFolderName(entityToSave.CustomerName);
+                    var titleFolderName = SanitizeFolderName(entityToSave.Title);
+                    var targetDirectory = Path.Combine(uploadsRoot, customerFolderName, titleFolderName, "申請附件");
+
+                    Directory.CreateDirectory(targetDirectory);
+                    foreach (var photo in previewPhotos)
+                    {
+                        try
+                        {
+                            // ✨ 保留原始副檔名，如果是非圖片的附件就不會被強迫變成 .jpg ✨
+                            var ext = Path.GetExtension(photo.FileName);
+                            if (string.IsNullOrEmpty(ext) && photo.IsImage) ext = ".jpg";
+                            var uniqueFileName = $"{Guid.NewGuid()}{ext}";
+                            var savePath = Path.Combine(targetDirectory, uniqueFileName);
+
+                            byte[] photoBytes;
+                            try
+                            {
+                                var base64Data = photo.Base64Data.Substring(photo.Base64Data.IndexOf(',') + 1);
+                                photoBytes = Convert.FromBase64String(base64Data);
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.LogError(ex, "Base64 轉換失敗 for photo {FileName}", photo.FileName);
+                                continue;
+                            }
+
+                            await File.WriteAllBytesAsync(savePath, photoBytes);
+                            var dbPath = $"/uploads/{customerFolderName}/{titleFolderName}/申請附件/{uniqueFileName}".Replace('\\', '/');
+                            context.WorkOrderPhotos.Add(new WorkOrderPhoto { WorkOrderId = workOrder.Id, FilePath = dbPath, Category = "申請附件" });
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, "儲存檔案 '{FileName}' 至 NAS 失敗", photo.FileName);
+                            errorMessage = $"派工單已儲存/更新，但上傳檔案 '{photo.FileName}' 失敗：{ex.Message}";
+                        }
+                    }
+                    await context.SaveChangesAsync();
+                    previewPhotos.Clear();
+                }
+
+                var baseUrl = Configuration["ApplicationSettings:BaseUrl"];
+                var workOrderUrl = $"{baseUrl}/workorders/details/{entityToSave.Id}?openExternalBrowser=1";
+                if (isNewWorkOrder && entityToSave.Status == "待指派") { try { var admins = await userManager.Users.Where(u => (u.IsManager || u.IsSupervisor) && !string.IsNullOrEmpty(u.LineUserId)).ToListAsync();
+                if (admins.Any()) { var requesterName = currentUser?.FullName ?? "N/A"; var mapsUrl = !string.IsNullOrWhiteSpace(entityToSave.Address) ? $"https://www.google.com/maps/search/?api=1&query={System.Net.WebUtility.UrlEncode(entityToSave.Address)}" : "未提供";
+                var message = $"【新派工申請通知】\n申請人：{requesterName}\n客戶：{entityToSave.CustomerName}\n標題：{entityToSave.Title}\n\n查看詳情與指派：\n{workOrderUrl}\n\n地址：{entityToSave.Address ?? "未提供"}\n地圖：{mapsUrl}"; foreach (var admin in admins) { _ = lineNotifyService.SendPushMessageAsync(admin.LineUserId, message);
+                } } } catch (Exception ex) { _logger.LogError(ex, "發送 [新工單] 通知失敗");
+                } }
+                if (assignmentChanged && engineersToNotifyOnAssign.Any()) { try { foreach (var engineer in engineersToNotifyOnAssign) { if (engineer != null && !string.IsNullOrEmpty(engineer.LineUserId)) { var message = $"【新任務通知】\n您有一筆新的派工任務：\n『{entityToSave.Title}』\n\n查看詳情：\n{workOrderUrl}";
+                _ = lineNotifyService.SendPushMessageAsync(engineer.LineUserId, message); } } } catch (Exception ex) { _logger.LogError(ex, "發送 [新任務] 通知失敗");
+                } }
+                if (contentChanged && !isNewWorkOrder && entityToSave.Status == "處理中" && engineersToNotifyOnChange.Any()) { try { foreach (var engineer in engineersToNotifyOnChange.Where(e => e.Id != currentUser.Id)) { if (engineer != null && !string.IsNullOrEmpty(engineer.LineUserId)) { var message = $"【工單內容更新通知】\n工單：『{entityToSave.Title}』\n內容已有更新，請點擊以下連結查看最新詳情：\n{workOrderUrl}";
+                _ = lineNotifyService.SendPushMessageAsync(engineer.LineUserId, message); } } } catch (Exception ex) { _logger.LogError(ex, "發送 [工單更新] 通知失敗");
+                } }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "儲存派工單時發生嚴重錯誤");
+                errorMessage = $"儲存派工單時發生嚴重錯誤：{ex.Message}";
+                if (ex.InnerException != null) { errorMessage += $" | InnerException: {ex.InnerException.Message}";
+                }
+                StateHasChanged();
+                return;
+            }
+
+            if (isManager || (currentUser?.IsSupervisor ?? false)) { redirectUrl = "/manager/dashboard";
+            }
+            _navigationManager.NavigateTo(redirectUrl, forceLoad: true);
+        }
+    }
+}

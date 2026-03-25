@@ -1,0 +1,244 @@
+﻿@page "/albums/{CustomerName}"
+@page "/albums/{CustomerName}/{WorkOrderId:int}"
+@rendermode InteractiveServer
+@attribute [Authorize]
+
+@using Microsoft.AspNetCore.Authorization
+@using Microsoft.EntityFrameworkCore
+@using WorkOrderSystem.Data
+@using WorkOrderSystem.Models
+
+@inject IDbContextFactory<ApplicationDbContext> DbFactory
+@inject NavigationManager NavigationManager
+
+<PageTitle>相簿 - @DecodedCustomerName</PageTitle>
+
+@if (isLoading)
+{
+    <h3>正在載入 @DecodedCustomerName 的工單相簿...</h3>
+    <div class="spinner-border" role="status">
+        <span class="visually-hidden">Loading...</span>
+    </div>
+}
+else
+{
+    <h3>
+        <a href="/albums" class="btn btn-outline-secondary btn-sm me-2" title="返回相簿總覽">
+            <i class="bi bi-arrow-left"></i>
+        </a>
+        客戶：@DecodedCustomerName
+    </h3>
+
+    @* --- 搜尋與排序 UI (保持不變) --- *@
+    <div class="row g-3 my-3">
+        <div class="col-md-8">
+            <label for="searchTitle" class="form-label visually-hidden">搜尋工單</label>
+            <InputText @bind-Value="SearchTerm" class="form-control" placeholder="搜尋工單標題..." />
+        </div>
+        <div class="col-md-4 d-flex align-items-end">
+            <div class="btn-group w-100" role="group" aria-label="排序按鈕">
+                <button class="btn btn-outline-secondary" @onclick='() => SetSortColumn("CreatedAt")'>
+                    依日期 @GetSortIcon("CreatedAt")
+                </button>
+                <button class="btn btn-outline-secondary" @onclick='() => SetSortColumn("Title")'>
+                    依標題 @GetSortIcon("Title")
+                </button>
+            </div>
+        </div>
+    </div>
+
+    @if (filteredWorkOrderAlbums.Count == 0)
+    {
+        <div class="alert alert-info" role="alert">
+            @if (string.IsNullOrEmpty(SearchTerm))
+            {
+                <span>這位客戶目前沒有任何工單包含照片。</span>
+            }
+            else
+            {
+                <span>找不到符合「@SearchTerm」的工單相簿。</span>
+            }
+        </div>
+    }
+    else
+    {
+        <div class="row g-4">
+            @foreach (var album in filteredWorkOrderAlbums)
+            {
+                <div class="col-12 col-md-6 col-lg-4 col-xl-3">
+                    <a href="@($"albums/gallery/{album.WorkOrderId}")"
+                       class="text-decoration-none text-dark">
+
+                        <div class="card h-100 shadow-sm album-card">
+                            @if (string.IsNullOrEmpty(album.CoverPhotoUrl))
+                            {
+                                <div class="card-img-top d-flex align-items-center justify-content-center bg-light"
+                                     style="aspect-ratio: 4 / 3; object-fit: cover;">
+                                    <i class="bi bi-image" style="font-size: 3rem; color: #dee2e6;"></i>
+                                </div>
+                            }
+                            else
+                            {
+                                <img src="@album.CoverPhotoUrl"
+                                     class="card-img-top"
+                                     style="aspect-ratio: 4 / 3; object-fit: cover;"
+                                     alt="@album.Title 封面">
+                            }
+
+                            <div class="card-body">
+                                <h5 class="card-title">@album.Title</h5>
+                                <p class="card-text text-muted mb-1">
+                                    <span class="badge bg-secondary">@album.WorkOrderType</span>
+                                </p>
+                                <p class="card-text">
+                                    <small class="text-muted">
+                                        @album.CreatedAt.ToString("yyyy-MM-dd")
+                                    </small>
+                                </p>
+                            </div>
+                        </div>
+                    </a>
+                </div>
+            }
+        </div>
+    }
+}
+
+<style>
+    .album-card {
+        transition: transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
+    }
+
+        .album-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 0.5rem 1rem rgba(0, 0, 0, 0.15) !important;
+        }
+</style>
+
+@code {
+    [Parameter]
+    public string CustomerName { get; set; }
+
+    // ✨ 修正 1：必須補上這個參數，否則路由會報錯
+    [Parameter]
+    public int? WorkOrderId { get; set; }
+
+    private string DecodedCustomerName => Uri.UnescapeDataString(CustomerName ?? string.Empty);
+
+    private List<WorkOrderAlbumViewModel> allWorkOrderAlbums = new();
+    private List<WorkOrderAlbumViewModel> filteredWorkOrderAlbums = new();
+    private bool isLoading = true;
+
+    // --- 搜尋與排序變數 ---
+    private string _searchTerm = "";
+    private string SearchTerm
+    {
+        get => _searchTerm;
+        set
+        {
+            _searchTerm = value;
+            ApplySearchAndSort();
+        }
+    }
+    private string currentSortColumn = "CreatedAt";
+    private bool isSortAscending = false;
+
+    // 🔴 請將原本的 OnInitializedAsync 移除，改用這個：
+    protected override async Task OnParametersSetAsync()
+    {
+        // 1. 如果網址帶有 WorkOrderId，直接轉址到相簿內頁 (保持原本邏輯)
+        if (WorkOrderId.HasValue)
+        {
+            NavigationManager.NavigateTo($"albums/gallery/{WorkOrderId}");
+            return;
+        }
+
+        // 2. 開始載入資料
+        isLoading = true;
+
+        // 確保 UI 在讀取資料前先更新為 Loading 狀態 (避免畫面卡在舊資料)
+        StateHasChanged();
+
+        var customerNameForQuery = DecodedCustomerName;
+
+        if (string.IsNullOrEmpty(customerNameForQuery))
+        {
+            isLoading = false;
+            return;
+        }
+
+        await using var context = DbFactory.CreateDbContext();
+
+        allWorkOrderAlbums = await context.WorkOrders
+            .Where(wo => wo.CustomerName == customerNameForQuery &&
+                         (wo.Photos.Any() || wo.WorkLogs.Any(log => log.Photos.Any())))
+            .Select(wo => new WorkOrderAlbumViewModel
+                {
+                    WorkOrderId = wo.Id,
+                    Title = wo.Title,
+                    WorkOrderType = wo.WorkOrderType,
+                    CreatedAt = wo.CreatedAt,
+                    CoverPhotoUrl = wo.Photos.Select(p => p.FilePath).FirstOrDefault() ??
+                                        wo.WorkLogs.SelectMany(log => log.Photos)
+                                                   .Select(p => p.FilePath)
+                                                   .FirstOrDefault()
+                })
+            .AsNoTracking()
+            .ToListAsync();
+
+        ApplySearchAndSort();
+        isLoading = false;
+    }
+
+    private void ApplySearchAndSort()
+    {
+        var query = allWorkOrderAlbums
+            .Where(a => a.Title.Contains(SearchTerm, StringComparison.OrdinalIgnoreCase));
+
+        if (currentSortColumn == "CreatedAt")
+        {
+            query = isSortAscending ? query.OrderBy(a => a.CreatedAt) : query.OrderByDescending(a => a.CreatedAt);
+        }
+        else if (currentSortColumn == "Title")
+        {
+            query = isSortAscending ? query.OrderBy(a => a.Title) : query.OrderByDescending(a => a.Title);
+        }
+
+        filteredWorkOrderAlbums = query.ToList();
+    }
+
+    private void SetSortColumn(string columnName)
+    {
+        if (currentSortColumn == columnName)
+        {
+            isSortAscending = !isSortAscending;
+        }
+        else
+        {
+            currentSortColumn = columnName;
+            isSortAscending = (columnName == "Title");
+        }
+        ApplySearchAndSort();
+    }
+
+    private RenderFragment GetSortIcon(string columnName)
+    {
+        if (currentSortColumn != columnName) return builder => { };
+        var iconClass = isSortAscending ? "bi-sort-up" : "bi-sort-down";
+        return builder =>
+        {
+            builder.OpenElement(0, "i");
+            builder.AddAttribute(1, "class", $"bi {iconClass} ms-1");
+            builder.CloseElement();
+        };
+    }
+
+    private class WorkOrderAlbumViewModel
+    {
+        public int WorkOrderId { get; set; }
+        public string Title { get; set; }
+        public string WorkOrderType { get; set; }
+        public DateTime CreatedAt { get; set; }
+        public string? CoverPhotoUrl { get; set; }
+    }
+}

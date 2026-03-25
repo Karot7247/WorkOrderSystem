@@ -1,0 +1,116 @@
+.top-row {
+    height: 3.5rem;
+    background-color: rgba(0,0,0,0.4);
+}
+
+.navbar-brand {
+    font-size: 1.1rem;
+    display: flex;
+    align-items: center;
+}
+
+.nav-item {
+    font-size: 0.95rem;
+    padding-bottom: 0.2rem;
+}
+
+    .nav-item:first-of-type {
+        padding-top: 1rem;
+    }
+
+    .nav-item ::deep .nav-link {
+        color: #d7d7d7;
+        background: none;
+        border: none;
+        border-radius: 4px;
+        height: 3rem;
+        display: flex;
+        align-items: center;
+        line-height: 3rem;
+        padding-left: 1rem;
+        transition: all 0.2s;
+    }
+
+        .nav-item ::deep .nav-link:hover {
+            background-color: rgba(255,255,255,0.1);
+            color: white;
+        }
+
+        .nav-item ::deep .nav-link.active {
+            background-color: rgba(255,255,255,0.2);
+            color: white;
+            font-weight: bold;
+            border-left: 4px solid #00b0ff;
+        }
+
+.sidebar-heading {
+    text-transform: uppercase;
+    font-size: 0.75rem;
+    letter-spacing: 1px;
+    margin-top: 1rem;
+    color: rgba(255, 255, 255, 0.5);
+}
+
+/* ?? 關鍵：隱藏控制用的 Checkbox */
+.mobile-menu-checkbox {
+    display: none;
+}
+
+/* 預設遮罩層隱藏 */
+.nav-backdrop {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background-color: rgba(0,0,0,0.5);
+    z-index: 1040;
+    backdrop-filter: blur(2px);
+    cursor: pointer;
+}
+
+/* ==========================================
+   手機版規則
+   ========================================== */
+@media (max-width: 640px) {
+    .nav-scrollable {
+        /* 預設隱藏，移出畫面 */
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 260px;
+        height: 100vh;
+        overflow-y: auto;
+        z-index: 1050;
+        /* 請確認這裡的顏色跟您的 MainLayout.razor.css 一致 */
+        background-image: linear-gradient(180deg, rgb(5, 39, 103) 0%, #3a0647 70%);
+        box-shadow: 4px 0 15px rgba(0,0,0,0.5);
+        transform: translateX(-105%); /* 移出畫面 */
+        transition: transform 0.3s ease-in-out;
+    }
+
+    /* ?? 核心邏輯：當 Checkbox 被勾選時，把選單移進來 */
+    .mobile-menu-checkbox:checked ~ .nav-scrollable {
+        transform: translateX(0);
+    }
+
+    /* 當 Checkbox 被勾選時，顯示遮罩層 */
+    .mobile-menu-checkbox:checked ~ .nav-backdrop {
+        display: block;
+    }
+}
+
+/* 電腦版規則 */
+@media (min-width: 641px) {
+    .nav-scrollable {
+        display: block !important;
+        height: calc(100vh - 3.5rem);
+        overflow-y: auto;
+        transform: none; /* 電腦版不需要移動 */
+    }
+
+    .nav-backdrop {
+        display: none !important;
+    }
+}

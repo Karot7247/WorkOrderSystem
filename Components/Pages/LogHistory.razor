@@ -1,0 +1,273 @@
+﻿@page "/workorders/{WorkOrderId:int}/logs"
+@rendermode InteractiveServer
+
+@using Microsoft.AspNetCore.Authorization
+@using Microsoft.EntityFrameworkCore
+@using WorkOrderSystem.Data
+@using WorkOrderSystem.Models
+@using Microsoft.AspNetCore.Identity
+@using WorkOrderSystem.Components.Shared
+@inject ILogger<LogHistory> _logger
+@attribute [Authorize]
+
+@inject IDbContextFactory<ApplicationDbContext> DbFactory
+@inject IWebHostEnvironment WebHostEnvironment
+@inject IJSRuntime JSRuntime
+@inject AuthenticationStateProvider AuthenticationStateProvider
+@inject UserManager<AppUser> UserManager
+@inject IConfiguration Configuration
+@* 注入 NavigationManager 以便進行下載導向 *@
+@inject NavigationManager NavigationManager 
+
+<PageTitle>工單日誌 - @(workOrder?.Id.ToString("D6") ?? "...")</PageTitle>
+
+@if (workOrder != null)
+{
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <div>
+            <h2 class="mb-1">工單日誌 - #@workOrder.Id.ToString("D6")</h2>
+            <h5 class="text-muted fw-normal">@workOrder.Title</h5>
+        </div>
+        <div>
+            <a class="btn btn-primary" href="@($"/workorders/{WorkOrderId}/logs/create")">
+                <i class="bi bi-plus-circle-fill me-2"></i>新增日誌
+            </a>
+        </div>
+    </div>
+
+    @if (sortedLogs.Any())
+    {
+        foreach (var log in sortedLogs)
+        {
+            <div class="card mb-3">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <div>
+                        <strong>工作日期：</strong> @log.LogDate.ToString("yyyy-MM-dd")
+                        <small class="ms-3 text-muted"> (由 @(log.CreatedBy?.FullName ?? "N/A") 記錄於 @log.CreatedAt.ToString("g"))</small>
+                    </div>
+                    <div>
+                        @* --- [NEW] 新增下載照片按鈕 --- *@
+                        @if (log.Photos != null && log.Photos.Any())
+                        {
+                            <button class="btn btn-sm btn-outline-primary me-1" @onclick="() => DownloadLogPhotosAsync(log.Id)" title="下載此日誌的所有照片">
+                                <i class="bi bi-download"></i> 下載照片
+                            </button>
+                        }
+                        @* --- [NEW END] --- *@
+
+                        @if (currentUser != null && (currentUser.Id == log.CreatedById || isManager || isSupervisor))
+                        {
+                            <a href="@($"/workorders/{WorkOrderId}/logs/edit/{log.Id}")" class="btn btn-sm btn-outline-secondary">編輯</a>
+                            <button class="btn btn-sm btn-outline-danger" @onclick="() => DeleteLogAsync(log.Id)">刪除</button>
+                        }
+                    </div>
+                </div>
+                <div class="card-body">
+                    <p class="card-text" style="white-space: pre-wrap;">@log.Content</p>
+
+                    @if (log.Photos != null && log.Photos.Any())
+                    {
+                        <hr />
+                        <div class="mt-3 d-flex flex-wrap" style="gap: 10px;">
+                            @foreach (var photo in log.Photos)
+                            {
+                                <div class="log-photo-thumbnail">
+                                    <button type="button" class="photo-thumbnail-btn" @onclick="() => OpenGallery(photo)"
+                                            title="點擊放大 @(photo.FileName ?? "照片")">
+                                        <img src="@photo.FilePath" class="img-thumbnail"
+                                             style="width: 100px; height: 100px; object-fit: cover;"
+                                             alt="@(photo.FileName ?? "日誌照片")" />
+                                    </button>
+                                </div>
+                            }
+                        </div>
+                    }
+                </div>
+                <div class="card-footer text-muted">
+                    <span><strong>花費時間：</strong> @log.TimeSpent 小時</span>
+                    <span class="mx-3">|</span>
+                    <span>
+                        <strong>參與人員：</strong>
+                        @string.Join(", ", log.Participants.Select(p => p.User.FullName))
+                        @(!string.IsNullOrEmpty(log.CustomParticipants) && log.Participants.Any() ? ", " : "")
+                        @log.CustomParticipants
+                    </span>
+                </div>
+            </div>
+        }
+    }
+    else
+    {
+        <div class="text-center p-5">
+            <p class="lead">目前這張工單還沒有任何工作日誌。</p>
+        </div>
+    }
+
+    <hr />
+    <div>
+        <a href="@($"/workorders/details/{WorkOrderId}")">返回工單詳情</a>
+    </div>
+}
+else
+{
+    <p><em>正在載入日誌資料...</em></p>
+}
+
+@if (isGalleryVisible && allLogPhotos.Any())
+{
+    <PhotoGallery Photos="allLogPhotosAsWorkOrderPhotos"
+                  StartIndex="galleryStartIndex"
+                  IsVisible="isGalleryVisible"
+                  OnClose="() => isGalleryVisible = false" />
+}
+
+<style>
+    .photo-thumbnail-btn {
+        padding: 0;
+        border: none;
+        background: none;
+        width: 100px;
+        height: 100px;
+        display: block;
+        cursor: pointer;
+    }
+
+    .photo-thumbnail-btn img:hover {
+        opacity: 0.8;
+        box-shadow: 0 0 10px rgba(0,123,255,0.5);
+    }
+</style>
+
+@code {
+    [Parameter]
+    public int WorkOrderId { get; set; }
+
+    private WorkOrder? workOrder;
+    private List<WorkLog> sortedLogs = new();
+    private AppUser? currentUser;
+    private bool isManager = false;
+    private bool isSupervisor = false;
+
+    private List<WorkLogPhoto> allLogPhotos = new();
+    private bool isGalleryVisible = false;
+    private int galleryStartIndex = 0;
+
+    private List<WorkOrderPhoto> allLogPhotosAsWorkOrderPhotos =>
+        allLogPhotos.Select(p => new WorkOrderPhoto
+            {
+                Id = p.Id,
+                FilePath = p.FilePath,
+                Category = "日誌照片",
+                CustomNote = p.WorkLog?.LogDate.ToString("yyyy-MM-dd") ?? p.FileName
+            }).ToList();
+
+    protected override async Task OnInitializedAsync()
+    {
+        var authState = await AuthenticationStateProvider.GetAuthenticationStateAsync();
+        var userPrincipal = authState.User;
+
+        if (userPrincipal.Identity is { IsAuthenticated: true })
+        {
+            currentUser = await UserManager.GetUserAsync(userPrincipal);
+            if (currentUser != null)
+            {
+                isManager = currentUser.IsManager;
+                isSupervisor = currentUser.IsSupervisor;
+            }
+        }
+
+        using var context = DbFactory.CreateDbContext();
+        workOrder = await context.WorkOrders
+          .AsNoTracking()
+          .Where(w => w.Id == WorkOrderId)
+          .Include(w => w.WorkLogs)
+            .ThenInclude(log => log.CreatedBy)
+          .Include(w => w.WorkLogs)
+            .ThenInclude(log => log.Participants)
+              .ThenInclude(p => p.User)
+          .Include(w => w.WorkLogs)
+            .ThenInclude(log => log.Photos)
+                .FirstOrDefaultAsync();
+
+        if (workOrder != null)
+        {
+            sortedLogs = workOrder.WorkLogs.OrderByDescending(log => log.LogDate).ToList();
+            allLogPhotos = sortedLogs
+                .SelectMany(log => log.Photos)
+                .OrderBy(p => p.WorkLog?.LogDate)
+                .ThenBy(p => p.Id)
+                .ToList();
+        }
+    }
+
+    private void OpenGallery(WorkLogPhoto clickedPhoto)
+    {
+        galleryStartIndex = allLogPhotos.IndexOf(clickedPhoto);
+        if (galleryStartIndex >= 0)
+        {
+            isGalleryVisible = true;
+            StateHasChanged();
+        }
+    }
+
+    // --- [NEW] 下載日誌照片的方法 ---
+    private async Task DownloadLogPhotosAsync(int logId)
+    {
+        // 這裡假設後端有一個 API 可以打包下載日誌照片
+        // 格式例如: /api/Download/WorkLogPhotos/{logId}
+        // 如果您還沒有這個 API，請參考下方的「補充：後端 API 實作建議」
+        
+        var downloadUrl = $"/api/Download/WorkLogPhotos/{logId}";
+        
+        // 使用 JS 開啟新視窗進行下載，避免影響當前頁面
+        await JSRuntime.InvokeVoidAsync("window.open", downloadUrl, "_blank");
+    }
+    // --- [NEW END] ---
+
+    private async Task DeleteLogAsync(int logId)
+    {
+        var confirmed = await JSRuntime.InvokeAsync<bool>("confirm", "您確定要永久刪除這筆日誌嗎？此操作無法復原！");
+        if (!confirmed) return;
+
+        using var context = DbFactory.CreateDbContext();
+        var logToDelete = await context.WorkLogs
+          .Include(l => l.Photos)
+                .FirstOrDefaultAsync(l => l.Id == logId);
+
+        if (logToDelete != null)
+        {
+            if (logToDelete.Photos.Any())
+            {
+                var uploadsRoot = Configuration["FileStorageSettings:UploadsRootPath"];
+                if (!string.IsNullOrEmpty(uploadsRoot))
+                {
+                    foreach (var photo in logToDelete.Photos)
+                    {
+                        try
+                        {
+                            var relativePath = photo.FilePath.TrimStart('/');
+                            relativePath = relativePath.Replace('/', Path.DirectorySeparatorChar);
+                            var fullNasPath = Path.Combine(uploadsRoot, relativePath);
+
+                            if (File.Exists(fullNasPath))
+                            {
+                                File.Delete(fullNasPath);
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, "刪除日誌照片檔案時發生錯誤");
+                        }
+                    }
+                }
+            }
+
+            context.WorkLogs.Remove(logToDelete);
+            await context.SaveChangesAsync();
+
+            sortedLogs.RemoveAll(log => log.Id == logId);
+            allLogPhotos.RemoveAll(p => p.WorkLogId == logId);
+            StateHasChanged();
+        }
+    }
+}

@@ -1,0 +1,755 @@
+﻿@page "/"
+@* ✨ 關閉預先渲染，徹底終結雙重生命週期造成的二次閃爍 ✨ *@
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+
+@using Microsoft.AspNetCore.Authorization
+@using Microsoft.EntityFrameworkCore
+@using WorkOrderSystem.Data
+@using WorkOrderSystem.Models
+@using Microsoft.AspNetCore.Identity
+@using System.Security.Claims
+@using Microsoft.JSInterop
+@using System.Net.Http.Json
+@using System.Text.Json.Serialization
+
+@attribute [Authorize]
+
+@inject IServiceScopeFactory ScopeFactory
+@inject AuthenticationStateProvider _authenticationStateProvider
+@inject UserManager<AppUser> UserManager
+@inject NavigationManager NavManager
+@inject IJSRuntime JS
+@inject ILogger<Home> Logger
+
+<PageTitle>首頁 - 儀表板</PageTitle>
+
+<style>
+    /* ========================================== */
+    /* 行事曆核心佈局 */
+    /* ========================================== */
+    .calendar-grid {
+        display: grid;
+        grid-template-columns: repeat(7, 1fr);
+        background-color: #f8f9fa;
+        border-top: 1px solid #dee2e6;
+        border-left: 1px solid #dee2e6;
+        border-radius: 8px;
+        overflow: hidden;
+    }
+
+    .calendar-header {
+        background-color: #343a40;
+        color: white;
+        text-align: center;
+        font-weight: bold;
+        padding: 10px 0;
+        border-right: 1px solid #dee2e6;
+    }
+
+    .calendar-cell {
+        background-color: white;
+        min-height: 110px;
+        border-right: 1px solid #dee2e6;
+        border-bottom: 1px solid #dee2e6;
+        display: flex;
+        flex-direction: column;
+        padding: 4px 0 !important;
+        cursor: pointer;
+        transition: background-color 0.2s;
+        overflow-x: hidden;
+    }
+
+        .calendar-cell:hover {
+            background-color: #f8f9fa;
+        }
+
+        .calendar-cell.other-month {
+            background-color: #f1f3f5;
+            color: #adb5bd;
+        }
+
+        .calendar-cell.today {
+            background-color: #e8f4f8;
+        }
+
+        .calendar-cell.selected {
+            background-color: #fff3cd;
+            box-shadow: inset 0 0 0 2px #ffc107;
+        }
+
+    .date-header-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        padding: 0 6px;
+        margin-bottom: 4px;
+    }
+
+    .date-number {
+        font-weight: bold;
+        font-size: 0.9rem;
+    }
+
+    .today .date-number {
+        background-color: #0dcaf0;
+        color: white;
+        border-radius: 50%;
+        width: 24px;
+        height: 24px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    /* ========================================== */
+    /* ✨ 跨日連貫色帶設計 (Event Bar) ✨ */
+    /* ========================================== */
+    .event-bar {
+        font-size: 0.75rem;
+        padding: 3px 6px;
+        margin-bottom: 2px !important;
+        cursor: pointer;
+        display: block;
+        text-align: left;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        color: white;
+        text-decoration: none;
+        height: 24px;
+        line-height: 18px;
+    }
+
+        .event-bar:hover {
+            filter: brightness(0.9);
+            text-decoration: none;
+            color: white;
+        }
+
+        .event-bar.text-dark {
+            color: #212529 !important;
+        }
+
+    .event-single {
+        margin-left: 4px !important;
+        margin-right: 4px !important;
+        border-radius: 4px !important;
+    }
+
+    .event-start {
+        margin-left: 4px !important;
+        margin-right: 0 !important;
+        border-top-left-radius: 4px !important;
+        border-bottom-left-radius: 4px !important;
+        border-top-right-radius: 0 !important;
+        border-bottom-right-radius: 0 !important;
+    }
+
+    .event-middle {
+        margin-left: 0 !important;
+        margin-right: 0 !important;
+        border-radius: 0 !important;
+    }
+
+    .event-end {
+        margin-left: 0 !important;
+        margin-right: 4px !important;
+        border-top-right-radius: 4px !important;
+        border-bottom-right-radius: 4px !important;
+        border-top-left-radius: 0 !important;
+        border-bottom-left-radius: 0 !important;
+    }
+
+    /* ✨ 隱形佔位符：用來將下方的工單往下推，維持軌道高度對齊 ✨ */
+    .event-placeholder {
+        height: 24px;
+        margin-bottom: 2px !important;
+        pointer-events: none;
+        background-color: transparent;
+    }
+
+    .message-card {
+        border-left: 4px solid #0d6efd;
+    }
+
+    .reply-card {
+        border-left: 3px solid #6c757d;
+        margin-left: 2rem;
+        background-color: #f8f9fa;
+    }
+
+    /* ========================================== */
+    /* 手機版專屬優化 (RWD) */
+    /* ========================================== */
+    @@media (max-width: 767.98px) {
+        .calendar-header {
+            padding: 5px 0;
+            font-size: 0.8rem;
+        }
+
+        .calendar-cell {
+            min-height: 60px;
+            padding: 2px 0 !important;
+        }
+
+        .date-header-row {
+            justify-content: center;
+        }
+
+        .holiday-text {
+            display: none;
+        }
+
+        .event-bar {
+            height: 6px;
+            padding: 0;
+            margin-bottom: 2px !important;
+            pointer-events: none !important;
+        }
+
+        .event-placeholder {
+            height: 6px;
+        }
+
+        .desktop-only-title {
+            display: none !important;
+        }
+    }
+</style>
+
+<div class="row">
+    @* ========================================== *@
+    @* 左側 / 上方：工單行事曆 *@
+    @* ========================================== *@
+    <div class="col-xl-7 mb-4">
+        <div class="card shadow-sm h-100 border-0">
+            <div class="card-header bg-white d-flex justify-content-between align-items-center py-3">
+                <h5 class="mb-0 fw-bold text-primary"><i class="bi bi-calendar-month"></i> 工單排程</h5>
+                <div class="btn-group btn-group-sm">
+                    <button class="btn btn-outline-secondary" @onclick="PrevMonth"><i class="bi bi-chevron-left"></i></button>
+                    <button class="btn btn-secondary" @onclick="GoToToday">今天</button>
+                    <button class="btn btn-outline-secondary" @onclick="NextMonth"><i class="bi bi-chevron-right"></i></button>
+                </div>
+            </div>
+            <div class="card-body px-2 px-md-3">
+                <h4 class="text-center mb-3 fw-bold">@currentMonth.ToString("yyyy 年 MM 月")</h4>
+
+                <div class="calendar-grid">
+                    @* 表頭 *@
+                    <div class="calendar-header bg-danger">日</div>
+                    <div class="calendar-header">一</div>
+                    <div class="calendar-header">二</div>
+                    <div class="calendar-header">三</div>
+                    <div class="calendar-header">四</div>
+                    <div class="calendar-header">五</div>
+                    <div class="calendar-header text-primary">六</div>
+
+                    @* 格子 *@
+                    @foreach (var day in calendarDays)
+                    {
+                        var isOtherMonth = day.Date.Month != currentMonth.Month;
+                        var isToday = day.Date == DateTime.Today;
+                        var isSelected = day.Date == selectedDate;
+
+                        <div class="calendar-cell @(isOtherMonth ? "other-month" : "") @(isToday ? "today" : "") @(isSelected ? "selected" : "")"
+                             @onclick="() => SelectDate(day.Date)">
+
+                            @* 日期與國定假日標頭 *@
+                            <div class="date-header-row">
+                                <span class="holiday-text fw-bold text-truncate"
+                                      style="font-size: 0.65rem; color: @(day.IsDayOff ? "#dc3545" : "#6c757d"); max-width: 70%;"
+                                      title="@day.HolidayName">
+                                    @day.HolidayName
+                                </span>
+                                <div class="date-number">@day.Date.Day</div>
+                            </div>
+
+                            @* 工單色帶或佔位符 *@
+                            @foreach (var ev in day.Events)
+                            {
+                                @if (ev.IsPlaceholder)
+                                {
+                                    <div class="event-placeholder"></div>
+                                }
+                                else
+                                {
+                                    <a href="/workorders/details/@ev.Id" class="event-bar @ev.BgColorClass @ev.SpanClass" title="@ev.Title - @ev.CustomerName">
+                                        <span class="desktop-only-title">
+                                            @if (ev.ShowTitle)
+                                            {
+                                                @ev.Title
+                                            }
+                                            else
+                                            {
+                                                @((MarkupString)"&nbsp;")
+                                            }
+                                        </span>
+                                    </a>
+                                }
+                            }
+                        </div>
+                    }
+                </div>
+
+                @* ✨ 手機版專屬：選定日期的工單清單 ✨ *@
+                <div class="d-md-none mt-4">
+                    <h6 class="fw-bold border-bottom pb-2 mb-3 text-primary">
+                        <i class="bi bi-list-task"></i> @selectedDate.ToString("MM/dd (ddd)") 排程明細
+                    </h6>
+                    @{
+                        var selectedDayEvents = calendarDays.FirstOrDefault(d => d.Date == selectedDate)?.Events.Where(e => !e.IsPlaceholder).ToList();
+                        if (selectedDayEvents != null && selectedDayEvents.Any())
+                        {
+                            <div class="list-group list-group-flush shadow-sm border rounded">
+                                @foreach (var ev in selectedDayEvents)
+                                {
+                                    <a href="/workorders/details/@ev.Id" class="list-group-item list-group-item-action py-2">
+                                        <div class="d-flex w-100 justify-content-between align-items-center mb-1">
+                                            <h6 class="mb-0 fw-bold text-truncate" style="max-width: 75%;">@ev.Title</h6>
+                                            <span class="badge @ev.BgColorClass" style="font-size: 0.7rem;">@ev.Status</span>
+                                        </div>
+                                        <small class="text-muted"><i class="bi bi-building me-1"></i>@ev.CustomerName</small>
+                                    </a>
+                                }
+                            </div>
+                        }
+                        else
+                        {
+                            <div class="text-center text-muted py-3 bg-light rounded border">
+                                本日無排程工單
+                            </div>
+                        }
+                    }
+                </div>
+            </div>
+        </div>
+    </div>
+
+    @* ========================================== *@
+    @* 右側 / 下方：團隊留言板 *@
+    @* ========================================== *@
+    <div class="col-xl-5 mb-4">
+        <div class="card shadow-sm h-100 border-0">
+            <div class="card-header bg-dark text-white py-3">
+                <h5 class="mb-0 fw-bold"><i class="bi bi-chat-text"></i> 團隊佈告欄</h5>
+            </div>
+            <div class="card-body d-flex flex-column" style="max-height: 700px;">
+
+                @* 新增留言區 *@
+                <div class="mb-3 border-bottom pb-3">
+                    <div class="input-group">
+                        <input type="text" class="form-control" placeholder="分享新消息或提問..." @bind="newMessageContent" @bind:event="oninput" @onkeyup="HandleMessageEnter" />
+                        <button class="btn btn-primary" type="button" @onclick="PostNewMessageAsync" disabled="@string.IsNullOrWhiteSpace(newMessageContent)">發佈</button>
+                    </div>
+                </div>
+
+                @* 留言列表區 *@
+                <div class="flex-grow-1 overflow-auto pe-2">
+                    @if (isLoadingMessages)
+                    {
+                        <div class="text-center py-4"><span class="spinner-border text-secondary"></span></div>
+                    }
+                    else if (!messages.Any())
+                    {
+                        <div class="text-center text-muted py-4">目前還沒有人留言喔！</div>
+                    }
+                    else
+                    {
+                        @foreach (var msg in messages)
+                        {
+                            <div class="card mb-3 message-card shadow-sm border-top-0 border-end-0 border-bottom-0">
+                                <div class="card-body py-2 px-3">
+                                    <div class="d-flex justify-content-between align-items-center mb-1">
+                                        <span class="fw-bold text-dark"><i class="bi bi-person-circle text-secondary me-1"></i> @(msg.User?.FullName ?? "未知使用者")</span>
+                                        <small class="text-muted">@GetTimeAgo(msg.CreatedAt)</small>
+                                    </div>
+                                    <p class="mb-2">@msg.Content</p>
+
+                                    <div class="text-end">
+                                        <button class="btn btn-sm btn-link text-decoration-none py-0 px-1" @onclick="() => ToggleReplyBox(msg.Id)">
+                                            <i class="bi bi-reply"></i> 回覆
+                                        </button>
+                                        @if (msg.UserId == currentUserId || isManager)
+                                        {
+                                            <button class="btn btn-sm btn-link text-danger text-decoration-none py-0 px-1" @onclick="() => DeleteMessageAsync(msg.Id)">
+                                                <i class="bi bi-trash"></i>
+                                            </button>
+                                        }
+                                    </div>
+
+                                    @* 回覆輸入框 *@
+                                    @if (activeReplyId == msg.Id)
+                                    {
+                                        <div class="input-group input-group-sm mt-2 mb-2">
+                                            <input type="text" class="form-control" placeholder="輸入回覆..." @bind="replyContent" @onkeyup="@(e => { if(e.Key == "Enter") _ = PostReplyAsync(msg.Id); })" />
+                                            <button class="btn btn-secondary" type="button" @onclick="() => PostReplyAsync(msg.Id)" disabled="@string.IsNullOrWhiteSpace(replyContent)">送出</button>
+                                            <button class="btn btn-outline-secondary" type="button" @onclick="() => activeReplyId = null">取消</button>
+                                        </div>
+                                    }
+                                </div>
+                            </div>
+
+                            @* 顯示回覆 *@
+                            @if (msg.Replies != null && msg.Replies.Any())
+                            {
+                                foreach (var reply in msg.Replies)
+                                {
+                                    <div class="card mb-2 reply-card shadow-none border-top-0 border-end-0 border-bottom-0">
+                                        <div class="card-body py-1 px-2">
+                                            <div class="d-flex justify-content-between align-items-center">
+                                                <span class="fw-bold" style="font-size:0.85rem;"><i class="bi bi-arrow-return-right me-1"></i> @(reply.User?.FullName ?? "未知使用者")</span>
+                                                <small class="text-muted" style="font-size:0.75rem;">@GetTimeAgo(reply.CreatedAt)</small>
+                                            </div>
+                                            <p class="mb-1" style="font-size:0.9rem;">@reply.Content</p>
+                                            @if (reply.UserId == currentUserId || isManager)
+                                            {
+                                                <div class="text-end">
+                                                    <button class="btn btn-sm btn-link text-danger text-decoration-none py-0 px-1" style="font-size:0.75rem;" @onclick="() => DeleteMessageAsync(reply.Id)">刪除</button>
+                                                </div>
+                                            }
+                                        </div>
+                                    </div>
+                                }
+                            }
+                        }
+                    }
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+@code {
+    // --- 行事曆變數 ---
+    private DateTime currentMonth = new DateTime(DateTime.Now.Year, DateTime.Now.Month, 1);
+    private List<CalendarDay> calendarDays = new();
+    private DateTime selectedDate = DateTime.Today;
+
+    private HashSet<int> loadedHolidayYears = new();
+    private Dictionary<DateTime, (string Name, bool IsDayOff)> holidayDict = new();
+
+    // --- 留言板變數 ---
+    private List<AppMessage> messages = new();
+    private string newMessageContent = "";
+    private string replyContent = "";
+    private int? activeReplyId = null;
+    private bool isLoadingMessages = true;
+
+    // --- 使用者狀態 ---
+    private string currentUserId = "";
+    private bool isManager = false;
+
+    // ✨ 新增強型別的內部類別，避免編譯器匿名型別的錯誤
+    private class CalendarTask
+    {
+        public int Id { get; set; }
+        public string Title { get; set; } = "";
+        public string CustomerName { get; set; } = "";
+        public string Status { get; set; } = "";
+        public DateTime Start { get; set; }
+        public DateTime End { get; set; }
+        public double Duration { get; set; }
+    }
+
+    private class TaiwanHoliday
+    {
+        [JsonPropertyName("date")]
+        public string Date { get; set; } = "";
+        [JsonPropertyName("isHoliday")]
+        public bool IsHoliday { get; set; }
+        [JsonPropertyName("description")]
+        public string Description { get; set; } = "";
+    }
+
+    private class CalendarEventInfo
+    {
+        public int Id { get; set; }
+        public string Title { get; set; } = "";
+        public string CustomerName { get; set; } = "";
+        public string Status { get; set; } = "";
+        public string BgColorClass { get; set; } = "";
+        public string SpanClass { get; set; } = "";
+        public bool ShowTitle { get; set; }
+        public bool IsPlaceholder { get; set; }
+    }
+
+    private class CalendarDay
+    {
+        public DateTime Date { get; set; }
+        public List<CalendarEventInfo> Events { get; set; } = new();
+        public string? HolidayName { get; set; }
+        public bool IsDayOff { get; set; }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        var authState = await _authenticationStateProvider.GetAuthenticationStateAsync();
+        var user = authState.User;
+        currentUserId = user.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "";
+
+        using var scope = ScopeFactory.CreateScope();
+        var userManager = scope.ServiceProvider.GetRequiredService<UserManager<AppUser>>();
+        var appUser = await userManager.GetUserAsync(user);
+        if (appUser != null) { isManager = appUser.IsManager; }
+
+        await LoadCalendarDataAsync();
+        await LoadMessagesAsync();
+    }
+
+    // ==========================================
+    // 📅 行事曆邏輯
+    // ==========================================
+    private void PrevMonth() { currentMonth = currentMonth.AddMonths(-1); _ = LoadCalendarDataAsync(); }
+    private void NextMonth() { currentMonth = currentMonth.AddMonths(1); _ = LoadCalendarDataAsync(); }
+    private void GoToToday() { currentMonth = new DateTime(DateTime.Now.Year, DateTime.Now.Month, 1); selectedDate = DateTime.Today; _ = LoadCalendarDataAsync(); }
+
+    private void SelectDate(DateTime date) { selectedDate = date; }
+
+    private async Task LoadHolidaysForYearAsync(int year)
+    {
+        if (loadedHolidayYears.Contains(year)) return;
+        try
+        {
+            using var http = new HttpClient();
+            var url = $"https://cdn.jsdelivr.net/gh/ruyut/TaiwanCalendar/data/{year}.json";
+            var holidays = await http.GetFromJsonAsync<List<TaiwanHoliday>>(url);
+            if (holidays != null)
+            {
+                foreach (var h in holidays)
+                {
+                    if (!string.IsNullOrWhiteSpace(h.Description) && DateTime.TryParseExact(h.Date, "yyyyMMdd", null, System.Globalization.DateTimeStyles.None, out DateTime dt))
+                    {
+                        holidayDict[dt.Date] = (h.Description, h.IsHoliday);
+                    }
+                }
+                loadedHolidayYears.Add(year);
+            }
+        }
+        catch (Exception ex) { Logger.LogError(ex, $"無法載入 {year} 年國定假日資料"); }
+    }
+
+    private string GetBadgeColorByStatus(string status)
+    {
+        return status switch
+        {
+            "處理中" => "bg-info text-dark",
+            "待指派" => "bg-primary",
+            "待主管審核" => "bg-warning text-dark",
+            "待管理者核銷" => "bg-success",
+            "已退回" => "bg-danger",
+            _ => "bg-secondary"
+        };
+    }
+
+    private async Task LoadCalendarDataAsync()
+    {
+        calendarDays.Clear();
+
+        var firstDayOfMonth = new DateTime(currentMonth.Year, currentMonth.Month, 1);
+        int diff = (int)firstDayOfMonth.DayOfWeek;
+        var startDate = firstDayOfMonth.AddDays(-diff);
+        var endDate = startDate.AddDays(41); 
+
+        await LoadHolidaysForYearAsync(startDate.Year);
+        if (startDate.Year != endDate.Year) await LoadHolidaysForYearAsync(endDate.Year);
+
+        using var scope = ScopeFactory.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
+        var activeOrdersDb = await context.WorkOrders
+            .AsNoTracking()
+            .Where(w => w.Status != "已取消") 
+            // ✨ [終極修正 1]：拔除 AssignmentDate 保底！嚴格限制「必須有排程日」才顯示
+            .Where(w => w.ScheduledStartDate.HasValue)
+            .Select(w => new { w.Id, w.Title, w.CustomerName, w.Status, w.CreatedAt, w.ScheduledStartDate, w.ScheduledEndDate })
+            .ToListAsync();
+
+        // 1. 使用強型別 CalendarTask 來存放預處理的資料
+        var eventList = activeOrdersDb.Select(w => {
+            // ✨ [終極修正 2]：不再有妥協，直接取用真正的排程日
+            var start = w.ScheduledStartDate!.Value.Date; 
+            var end = (w.ScheduledEndDate ?? start).Date;
+            if (end < start) end = start; 
+            
+            return new CalendarTask { 
+                Id = w.Id,
+                Title = w.Title ?? "無標題",
+                CustomerName = w.CustomerName ?? "",
+                Status = w.Status ?? "",
+                Start = start, 
+                End = end, 
+                Duration = (end - start).TotalDays 
+            };
+        })
+        .Where(x => x.Start <= endDate && x.End >= startDate) 
+        .OrderBy(x => x.Start)
+        .ThenByDescending(x => x.Duration) 
+        .ThenBy(x => x.Id)
+        .ToList();
+
+        // 2. Bin Packing (分配專屬軌道)
+        var slotEndDates = new Dictionary<int, DateTime>();
+        var assignedEvents = new List<(int Slot, CalendarTask Ev)>();
+
+        foreach (var ev in eventList)
+        {
+            int slot = 0;
+            while (slotEndDates.ContainsKey(slot) && slotEndDates[slot] >= ev.Start)
+            {
+                slot++;
+            }
+            slotEndDates[slot] = ev.End;
+            assignedEvents.Add((slot, ev));
+        }
+
+        // 3. 填入 42 天的格子
+        for (int i = 0; i < 42; i++)
+        {
+            var cellDate = startDate.AddDays(i).Date;
+            var dayObj = new CalendarDay { Date = cellDate };
+
+            if (holidayDict.TryGetValue(cellDate, out var holidayInfo))
+            {
+                dayObj.HolidayName = holidayInfo.Name;
+                dayObj.IsDayOff = holidayInfo.IsDayOff;
+            }
+
+            var todaysEvents = assignedEvents.Where(e => cellDate >= e.Ev.Start && cellDate <= e.Ev.End).ToList();
+            
+            if (todaysEvents.Any())
+            {
+                int maxSlot = todaysEvents.Max(e => e.Slot);
+
+                for (int s = 0; s <= maxSlot; s++)
+                {
+                    var evInSlot = todaysEvents.FirstOrDefault(e => e.Slot == s);
+                    
+                    if (evInSlot.Ev != null)
+                    {
+                        var w = evInSlot.Ev;
+                        bool isStart = cellDate == w.Start;
+                        bool isEnd = cellDate == w.End;
+                        bool isSingleDay = isStart && isEnd;
+
+                        string spanClass = "event-single";
+                        if (!isSingleDay)
+                        {
+                            if (isStart) spanClass = "event-start";
+                            else if (isEnd) spanClass = "event-end";
+                            else spanClass = "event-middle";
+                        }
+
+                        bool showTitle = isStart || cellDate.DayOfWeek == DayOfWeek.Sunday;
+
+                        dayObj.Events.Add(new CalendarEventInfo {
+                            Id = w.Id, 
+                            Title = w.Title, 
+                            CustomerName = w.CustomerName, 
+                            Status = w.Status,
+                            BgColorClass = GetBadgeColorByStatus(w.Status),
+                            SpanClass = spanClass,
+                            ShowTitle = showTitle,
+                            IsPlaceholder = false
+                        });
+                    }
+                    else 
+                    {
+                        dayObj.Events.Add(new CalendarEventInfo { IsPlaceholder = true });
+                    }
+                }
+            }
+
+            calendarDays.Add(dayObj);
+        }
+        StateHasChanged();
+    }
+
+    // ==========================================
+    // 💬 留言板邏輯
+    // ==========================================
+    private async Task LoadMessagesAsync()
+    {
+        isLoadingMessages = true;
+        using var scope = ScopeFactory.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
+        messages = await context.AppMessages
+            .Include(m => m.User)
+            .Include(m => m.Replies).ThenInclude(r => r.User)
+            .Where(m => m.ParentMessageId == null)
+            .OrderByDescending(m => m.CreatedAt)
+            .AsNoTracking()
+            .ToListAsync();
+
+        isLoadingMessages = false;
+        StateHasChanged();
+    }
+
+    private async Task HandleMessageEnter(KeyboardEventArgs e) { if (e.Key == "Enter") await PostNewMessageAsync(); }
+
+    private async Task PostNewMessageAsync()
+    {
+        if (string.IsNullOrWhiteSpace(newMessageContent) || string.IsNullOrEmpty(currentUserId)) return;
+
+        using var scope = ScopeFactory.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
+        var newMsg = new AppMessage { Content = newMessageContent.Trim(), UserId = currentUserId, CreatedAt = DateTime.Now };
+        context.AppMessages.Add(newMsg);
+        await context.SaveChangesAsync();
+
+        newMessageContent = "";
+        await LoadMessagesAsync();
+    }
+
+    private void ToggleReplyBox(int messageId)
+    {
+        if (activeReplyId == messageId) { activeReplyId = null; }
+        else { activeReplyId = messageId; replyContent = ""; }
+    }
+
+    private async Task PostReplyAsync(int parentId)
+    {
+        if (string.IsNullOrWhiteSpace(replyContent) || string.IsNullOrEmpty(currentUserId)) return;
+
+        using var scope = ScopeFactory.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
+        var reply = new AppMessage { Content = replyContent.Trim(), UserId = currentUserId, CreatedAt = DateTime.Now, ParentMessageId = parentId };
+        context.AppMessages.Add(reply);
+        await context.SaveChangesAsync();
+
+        activeReplyId = null;
+        replyContent = "";
+        await LoadMessagesAsync();
+    }
+
+    private async Task DeleteMessageAsync(int messageId)
+    {
+        var confirmed = await JS.InvokeAsync<bool>("confirm", "確定要刪除這則留言嗎？");
+        if (!confirmed) return;
+
+        using var scope = ScopeFactory.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
+        var msg = await context.AppMessages.Include(m => m.Replies).FirstOrDefaultAsync(m => m.Id == messageId);
+        if (msg != null)
+        {
+            if (msg.Replies != null && msg.Replies.Any()) context.AppMessages.RemoveRange(msg.Replies);
+            context.AppMessages.Remove(msg);
+            await context.SaveChangesAsync();
+            await LoadMessagesAsync();
+        }
+    }
+
+    private string GetTimeAgo(DateTime dt)
+    {
+        TimeSpan span = DateTime.Now - dt;
+        if (span.Days > 365) return $"{span.Days / 365} 年前";
+        if (span.Days > 30) return $"{span.Days / 30} 個月前";
+        if (span.Days > 0) return $"{span.Days} 天前";
+        if (span.Hours > 0) return $"{span.Hours} 小時前";
+        if (span.Minutes > 0) return $"{span.Minutes} 分鐘前";
+        return "剛剛";
+    }
+}

@@ -1,0 +1,38 @@
+{
+  "$schema": "http://json.schemastore.org/launchsettings.json",
+    "iisSettings": {
+      "windowsAuthentication": false,
+      "anonymousAuthentication": true,
+      "iisExpress": {
+        "applicationUrl": "http://localhost:35553",
+        "sslPort": 44340
+      }
+    },
+    "profiles": {
+      "http": {
+        "commandName": "Project",
+        "dotnetRunMessages": true,
+        "launchBrowser": true,
+        "applicationUrl": "http://*:5002",
+        "environmentVariables": {
+          "ASPNETCORE_ENVIRONMENT": "Development"
+        }
+      },
+      "https": {
+        "commandName": "Project",
+        "dotnetRunMessages": true,
+        "launchBrowser": true,
+        "applicationUrl": "http://*:7209",
+        "environmentVariables": {
+          "ASPNETCORE_ENVIRONMENT": "Development"
+        }
+      },
+      "IIS Express": {
+        "commandName": "IISExpress",
+        "launchBrowser": true,
+        "environmentVariables": {
+          "ASPNETCORE_ENVIRONMENT": "Development"
+        }
+      }
+    }
+  }

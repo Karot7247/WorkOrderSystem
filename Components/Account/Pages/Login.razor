@@ -1,0 +1,91 @@
+﻿@page "/Account/Login"
+
+@using System.ComponentModel.DataAnnotations
+@using Microsoft.AspNetCore.Identity
+@using WorkOrderSystem.Data
+
+@inject UserManager<AppUser> UserManager
+@inject SignInManager<AppUser> SignInManager
+@inject NavigationManager NavigationManager
+
+<PageTitle>Log in</PageTitle>
+
+<h3>登入系統</h3>
+
+<div class="row">
+    <div class="col-md-4">
+        <EditForm Model="loginModel" OnValidSubmit="HandleLogin" FormName="LoginForm">
+            <DataAnnotationsValidator />
+
+            <hr />
+
+            @if (!string.IsNullOrEmpty(errorMessage))
+            {
+                <div class="alert alert-danger">@errorMessage</div>
+            }
+
+            <div class="form-floating mb-3">
+                <InputText @bind-Value="loginModel.UserName" class="form-control" id="username" />
+                <label for="username">使用者帳號</label>
+                <ValidationMessage For="() => loginModel.UserName" class="text-danger" />
+            </div>
+
+            <div class="form-floating mb-3">
+                <InputText @bind-Value="loginModel.Password" type="password" class="form-control" id="password" />
+                <label for="password">密碼</label>
+                <ValidationMessage For="() => loginModel.Password" class="text-danger" />
+            </div>
+
+            <div class="checkbox mb-3">
+                <label class="form-label">
+                    <InputCheckbox @bind-Value="loginModel.RememberMe" />
+                    記住我?
+                </label>
+            </div>
+
+            <button type="submit" class="w-100 btn btn-lg btn-primary">登入</button>
+        </EditForm>
+    </div>
+</div>
+
+@code {
+    [SupplyParameterFromForm]
+    private LoginModel loginModel { get; set; } = new();
+    private string? errorMessage;
+
+    private async Task HandleLogin()
+    {
+        errorMessage = null;
+
+        var user = await UserManager.FindByNameAsync(loginModel.UserName);
+        if (user == null)
+        {
+            errorMessage = "登入失敗：找不到該使用者。";
+            return;
+        }
+
+        var result = await SignInManager.CheckPasswordSignInAsync(user, loginModel.Password, lockoutOnFailure: false);
+        if (result.Succeeded)
+        {
+            // 3. 將 loginModel.RememberMe 的值傳入 isPersistent 參數
+            await SignInManager.SignInAsync(user, isPersistent: loginModel.RememberMe);
+            NavigationManager.NavigateTo("/", forceLoad: true);
+        }
+        else
+        {
+            errorMessage = "登入失敗：密碼不正確。";
+        }
+    }
+
+    public class LoginModel
+    {
+        [Required(ErrorMessage = "使用者帳號為必填項")]
+        public string UserName { get; set; } = "";
+
+        [Required(ErrorMessage = "密碼為必填項")]
+        public string Password { get; set; } = "";
+
+        // 1. 在這裡新增 RememberMe 屬性
+        public bool RememberMe { get; set; }
+    }
+}

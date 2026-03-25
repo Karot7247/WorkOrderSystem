@@ -1,0 +1,209 @@
+﻿@page "/albums/gallery/{WorkOrderId:int}"
+@rendermode InteractiveServer
+@attribute [Authorize]
+
+@using Microsoft.AspNetCore.Authorization
+@using Microsoft.EntityFrameworkCore
+@using WorkOrderSystem.Data
+@using WorkOrderSystem.Models
+@using WorkOrderSystem.Components.Shared @* 引用 PhotoGallery 元件 *@
+
+@inject IDbContextFactory<ApplicationDbContext> DbFactory
+@inject NavigationManager NavigationManager
+
+<PageTitle>相簿 - @(workOrder?.Title ?? "...")</PageTitle>
+
+@if (isLoading)
+{
+    <h3>正在載入相簿...</h3>
+    <div class="spinner-border" role="status">
+        <span class="visually-hidden">Loading...</span>
+    </div>
+}
+else if (workOrder == null)
+{
+    <div class="alert alert-danger" role="alert">
+        找不到工單 (ID: @WorkOrderId)。
+    </div>
+}
+else
+{
+    <h3>
+        <a href="@($"albums/{Uri.EscapeDataString(workOrder.CustomerName)}")" 
+           class="btn btn-outline-secondary btn-sm me-2" 
+           title="返回 @workOrder.CustomerName 相簿">
+            <i class="bi bi-arrow-left"></i>
+        </a>
+        工單：@workOrder.Title
+    </h3>
+    <p class="text-muted">
+        客戶：@workOrder.CustomerName |
+        案件類型：@workOrder.WorkOrderType |
+        申請日期：@workOrder.CreatedAt.ToString("yyyy-MM-dd")
+    </p>
+
+    @if (allPhotos.Count == 0)
+    {
+        <div class="alert alert-info" role="alert">
+            此工單目前沒有任何照片。
+        </div>
+    }
+    else
+    {
+        @* --- ✨ 這是核心修改：依分類分組顯示 ✨ --- *@
+
+        @foreach (var photoGroup in allPhotos.GroupBy(p => p.Category, (key, g) => new { Category = key, Photos = g.ToList() }))
+        {
+            @* 1. 顯示分類標題 *@
+            <h4 class="mt-4 mb-3 border-bottom pb-2">
+                @photoGroup.Category (@photoGroup.Photos.Count 張)
+            </h4>
+
+            @* 2. 顯示該分類的照片網格 *@
+            <div class="row g-3">
+                @foreach (var photo in photoGroup.Photos)
+                {
+                    @* (移除了錯誤的 @{ ... } 區塊)
+    *@
+                    <div class="col-6 col-md-4 col-lg-3 col-xl-2">
+                        <div class="position-relative">
+
+                            @* ✨ 修正：直接在 onclick Lambda 中計算索引 ✨ *@
+                            <button type="button" class="photo-thumbnail-btn"
+                                    @onclick="@(() => OpenGallery(allPhotos.IndexOf(photo)))">
+
+                                <img src="@photo.FilePath"
+                                     class="img-fluid img-thumbnail"
+                                     style="aspect-ratio: 4 / 3; object-fit: cover;"
+                                     alt="@photo.Category" />
+                            </button>
+                        </div>
+                        <p class="text-center small mb-0 mt-1">
+                            <strong>@photo.Category</strong>
+                            @if ((photo.Category == "自行備註" || photo.Category == "日誌照片") && !string.IsNullOrEmpty(photo.CustomNote))
+                            {
+                                <br />
+
+                                <small class="text-muted">@photo.CustomNote</small>
+                            }
+                        </p>
+                    </div>
+                }
+            </div>
+        }
+        @* --- ✨ 修改結束 ✨ --- *@
+    }
+}
+
+
+@* 重複使用 PhotoGallery 元件 (保持不變) *@
+@if (isGalleryVisible && allPhotos.Any())
+{
+    <PhotoGallery Photos="allPhotos"
+                  StartIndex="galleryStartIndex"
+                  IsVisible="isGalleryVisible"
+                  OnClose="() => isGalleryVisible = false" />
+}
+
+@* CSS 樣式 (保持不變) *@
+<style>
+    .photo-thumbnail-btn {
+        padding: 0;
+        border: none;
+        background: none;
+        width: 100%;
+        display: block;
+        cursor: pointer;
+    }
+    .photo-thumbnail-btn img:hover {
+        opacity: 0.8;
+        box-shadow: 0 0 10px rgba(0,123,255,0.5);
+    }
+</style>
+
+
+@code {
+    [Parameter]
+    public int WorkOrderId { get; set; }
+
+    private WorkOrder? workOrder; 
+    private List<WorkOrderPhoto> allPhotos = new(); 
+    private bool isLoading = true;
+
+    // --- PhotoGallery 狀態變數 (保持不變) ---
+    private bool isGalleryVisible = false;
+    private int galleryStartIndex = 0;
+    // ---
+
+    // --- 分類排序字典 (保持不變) ---
+    private static readonly Dictionary<string, int> CategorySortOrder = new()
+    {
+        { "申請附件", -1 }, 
+        { "施工前", 0 }, 
+        { "施工中", 1 }, 
+        { "施工後", 2 }, 
+        { "自行備註", 3 }, 
+        { "日誌照片", 4 }, 
+        { "未分類", 5 }
+    };
+
+    // --- OnInitializedAsync (保持不變) ---
+    protected override async Task OnInitializedAsync()
+    {
+        isLoading = true;
+        await using var context = DbFactory.CreateDbContext();
+
+        // 1. 取得工單基本資料
+        workOrder = await context.WorkOrders
+            .AsNoTracking()
+            .FirstOrDefaultAsync(wo => wo.Id == WorkOrderId);
+
+        if (workOrder == null)
+        {
+            isLoading = false;
+            return;
+        }
+
+        // 2. 取得工單照片
+        var workOrderPhotos = await context.WorkOrderPhotos
+            .AsNoTracking()
+            .Where(p => p.WorkOrderId == WorkOrderId)
+            .ToListAsync();
+
+        // 3. 取得日誌照片
+        var logPhotos = await context.WorkLogPhotos
+            .AsNoTracking()
+            .Include(lp => lp.WorkLog) 
+            .Where(lp => lp.WorkLog.WorkOrderId == WorkOrderId)
+            .Select(lp => new WorkOrderPhoto 
+            {
+                Id = lp.Id,
+                FilePath = lp.FilePath,
+                Category = "日誌照片", 
+                CustomNote = $"{lp.WorkLog.LogDate:yyyy-MM-dd} - {lp.FileName ?? "日誌照片"}",
+                WorkOrderId = WorkOrderId 
+            })
+            .ToListAsync();
+
+        // 4. 合併
+        allPhotos = new List<WorkOrderPhoto>();
+        allPhotos.AddRange(workOrderPhotos);
+        allPhotos.AddRange(logPhotos);
+
+        // 5. 排序 (這一步很重要，GroupBy 會維持這個排序)
+        allPhotos = allPhotos
+            .OrderBy(p => CategorySortOrder.GetValueOrDefault(p.Category ?? "未分類", 99))
+            .ThenBy(p => p.CustomNote) 
+            .ToList();
+
+        isLoading = false;
+    }
+
+    // --- OpenGallery (保持不變) ---
+    private void OpenGallery(int index)
+    {
+        galleryStartIndex = index;
+        isGalleryVisible = true;
+        StateHasChanged(); 
+    }
+}

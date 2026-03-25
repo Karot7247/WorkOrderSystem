@@ -1,0 +1,382 @@
+﻿@inject IJSRuntime JSRuntime
+@implements IAsyncDisposable
+@using WorkOrderSystem.Models
+
+@if (IsVisible && Photos != null && Photos.Any())
+{
+    <div class="photo-gallery-overlay" @onclick="CloseGallery" @ref="galleryOverlay" @onkeydown="HandleKeyDown" tabindex="-1">
+
+        <style>
+            .photo-gallery-overlay {
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                background-color: rgba(0, 0, 0, 0.95);
+                display: flex;
+                flex-direction: column;
+                justify-content: center;
+                align-items: center;
+                z-index: 2000;
+                backdrop-filter: blur(5px);
+                outline: none;
+            }
+
+            /* 1. 外層視窗：黑色背景，無任何 Flex */
+            #panzoom-container {
+                width: 100vw; /* 強制視窗寬度 */
+                height: 100vh; /* 強制視窗高度 */
+                background-color: black;
+                overflow: hidden;
+                position: relative; /* 作為座標基準 */
+                display: block;
+                touch-action: none;
+            }
+
+                /* 2. Fabric 的包裝層：絕對定位，強制左上角 */
+                /* 這是 Panzoom 真正控制的對象 */
+                #panzoom-container .canvas-container {
+                    position: absolute !important;
+                    top: 0 !important;
+                    left: 0 !important;
+                    margin: 0 !important;
+                    padding: 0 !important;
+                    transform-origin: 0 0 !important; /* 物理定律：必須是 0 0 */
+                    /* 強制移除任何可能的尺寸限制，讓 Canvas 保持它的解析度 */
+                    max-width: none !important;
+                    max-height: none !important;
+                    width: auto !important;
+                    height: auto !important;
+                }
+
+            .gallery-toolbar {
+                position: absolute;
+                top: 20px;
+                left: 50%;
+                transform: translateX(-50%);
+                background: rgba(40, 40, 40, 0.9);
+                padding: 8px 15px;
+                border-radius: 50px;
+                z-index: 2002;
+                display: flex;
+                gap: 8px;
+                align-items: center;
+                box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+                flex-wrap: wrap;
+                justify-content: center;
+                max-width: 95vw;
+            }
+
+                .gallery-toolbar button {
+                    background: transparent;
+                    border: none;
+                    color: #ddd;
+                    font-size: 1.2rem;
+                    width: 36px;
+                    height: 36px;
+                    border-radius: 50%;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    transition: all 0.2s;
+                }
+
+                    .gallery-toolbar button:hover {
+                        background-color: rgba(255,255,255,0.1);
+                        color: white;
+                    }
+
+                    .gallery-toolbar button.active {
+                        background-color: #0d6efd;
+                        color: white;
+                        box-shadow: 0 0 10px rgba(13, 110, 253, 0.5);
+                    }
+
+            .tool-divider {
+                width: 1px;
+                height: 24px;
+                background-color: #666;
+                margin: 0 5px;
+            }
+
+            .color-picker-container {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                border-left: 1px solid #666;
+                padding-left: 10px;
+                margin-left: 5px;
+                margin-right: 5px;
+            }
+
+            .color-dot {
+                width: 20px;
+                height: 20px;
+                border-radius: 50%;
+                cursor: pointer;
+                border: 2px solid transparent;
+                transition: transform 0.2s;
+                flex-shrink: 0;
+            }
+
+                .color-dot:hover {
+                    transform: scale(1.2);
+                }
+
+                .color-dot.selected {
+                    border-color: white;
+                    box-shadow: 0 0 5px white;
+                }
+
+            .color-input {
+                width: 24px;
+                height: 24px;
+                padding: 0;
+                border: none;
+                background: none;
+                cursor: pointer;
+            }
+
+                .color-input::-webkit-color-swatch-wrapper {
+                    padding: 0;
+                }
+
+                .color-input::-webkit-color-swatch {
+                    border: 2px solid #ddd;
+                    border-radius: 50%;
+                }
+
+            .gallery-close-btn {
+                position: absolute;
+                top: 20px;
+                right: 20px;
+                background: transparent;
+                border: none;
+                color: white;
+                font-size: 2.5rem;
+                z-index: 2002;
+                cursor: pointer;
+                opacity: 0.8;
+                line-height: 1;
+            }
+
+                .gallery-close-btn:hover {
+                    opacity: 1;
+                }
+
+            .gallery-nav-btn {
+                position: absolute;
+                top: 50%;
+                transform: translateY(-50%);
+                background: rgba(0,0,0,0.3);
+                border: none;
+                color: white;
+                font-size: 2rem;
+                padding: 20px 10px;
+                z-index: 2002;
+                cursor: pointer;
+                transition: background 0.3s;
+                border-radius: 5px;
+            }
+
+                .gallery-nav-btn:hover {
+                    background: rgba(0,0,0,0.6);
+                }
+
+                .gallery-nav-btn.prev {
+                    left: 10px;
+                }
+
+                .gallery-nav-btn.next {
+                    right: 10px;
+                }
+
+            .gallery-caption {
+                position: absolute;
+                bottom: 20px;
+                left: 50%;
+                transform: translateX(-50%);
+                color: white;
+                background-color: rgba(0,0,0,0.6);
+                padding: 5px 20px;
+                border-radius: 20px;
+                font-size: 0.9rem;
+                z-index: 2002;
+                pointer-events: none;
+                white-space: nowrap;
+            }
+        </style>
+
+        <button class="gallery-close-btn" @onclick="CloseGallery" @onclick:stopPropagation="true" title="關閉 (Esc)">&times;</button>
+
+        <div class="gallery-toolbar" @onclick:stopPropagation="true">
+            <button @onclick="ZoomIn" title="放大"><i class="bi bi-zoom-in"></i></button>
+            <button @onclick="ZoomOut" title="縮小"><i class="bi bi-zoom-out"></i></button>
+            <button @onclick="ResetZoom" title="還原"><i class="bi bi-aspect-ratio"></i></button>
+
+            <div class="tool-divider"></div>
+
+            <button @onclick="ToggleDrawing" class="@(isDrawingMode ? "active" : "")" title="編輯/繪圖模式 (P)">
+                <i class="bi bi-pencil-square"></i>
+            </button>
+
+            @if (isDrawingMode)
+            {
+                <div class="tool-divider"></div>
+                <button class="@(activeTool == "pencil" ? "active" : "")" @onclick="@(() => SetTool("pencil"))" title="自由畫筆"><i class="bi bi-pencil"></i></button>
+                <button class="@(activeTool == "rect" ? "active" : "")" @onclick="@(() => SetTool("rect"))" title="矩形工具"><i class="bi bi-square"></i></button>
+                <button class="@(activeTool == "circle" ? "active" : "")" @onclick="@(() => SetTool("circle"))" title="圓形工具"><i class="bi bi-circle"></i></button>
+
+                <div class="tool-divider"></div>
+                <button @onclick="Undo" title="上一步 (Ctrl+Z)"><i class="bi bi-arrow-counterclockwise"></i></button>
+                <button @onclick="Redo" title="下一步 (Ctrl+Y)"><i class="bi bi-arrow-clockwise"></i></button>
+
+                <div class="color-picker-container">
+                    <span class="color-dot @(brushColor == "#FF0000" ? "selected" : "")" style="background-color: #FF0000;" @onclick="@(() => SetBrushColor("#FF0000"))"></span>
+                    <span class="color-dot @(brushColor == "#FFFF00" ? "selected" : "")" style="background-color: #FFFF00;" @onclick="@(() => SetBrushColor("#FFFF00"))"></span>
+                    <span class="color-dot @(brushColor == "#008000" ? "selected" : "")" style="background-color: #008000;" @onclick="@(() => SetBrushColor("#008000"))"></span>
+                    <span class="color-dot @(brushColor == "#FFFFFF" ? "selected" : "")" style="background-color: #FFFFFF;" @onclick="@(() => SetBrushColor("#FFFFFF"))"></span>
+                    <input type="color" class="color-input" value="@brushColor" @onchange="OnColorPickerChange" />
+                </div>
+                <button @onclick="ClearCanvas" title="清除所有"><i class="bi bi-trash"></i></button>
+            }
+
+            <div class="tool-divider"></div>
+            <button @onclick="DownloadImage" title="下載"><i class="bi bi-download"></i></button>
+        </div>
+
+        <button class="gallery-nav-btn prev" @onclick="ShowPrevious" @onclick:stopPropagation="true">&#10094;</button>
+        <button class="gallery-nav-btn next" @onclick="ShowNext" @onclick:stopPropagation="true">&#10095;</button>
+
+        <div id="panzoom-container" @onclick:stopPropagation="true">
+            <canvas id="fabric-canvas-@uniqueId"></canvas>
+        </div>
+
+        <div class="gallery-caption">
+            <strong>@Photos[currentPhotoIndex].Category</strong>
+            @if (!string.IsNullOrEmpty(Photos[currentPhotoIndex].CustomNote))
+            {
+                <span>: @Photos[currentPhotoIndex].CustomNote</span>
+            }
+            <span class="ms-2 opacity-75">(@(currentPhotoIndex + 1) / @Photos.Count)</span>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public bool IsVisible { get; set; }
+    [Parameter] public List<WorkOrderPhoto> Photos { get; set; } = new();
+    [Parameter] public int StartIndex { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private int currentPhotoIndex;
+    private IJSObjectReference? galleryModule;
+    private ElementReference galleryOverlay;
+    private bool isDrawingMode = false;
+    private string activeTool = "pencil";
+    private string brushColor = "#FF0000";
+    private bool wasVisibleLastRender = false;
+    private readonly string uniqueId = Guid.NewGuid().ToString("N");
+
+    protected override void OnParametersSet()
+    {
+        if (!wasVisibleLastRender && IsVisible) { currentPhotoIndex = StartIndex; }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (IsVisible && !wasVisibleLastRender)
+        {
+            var v = DateTime.Now.Ticks;
+            if (galleryModule == null)
+                galleryModule = await JSRuntime.InvokeAsync<IJSObjectReference>("import", $"./js/galleryInterop.js?v={v}");
+
+            if (galleryModule is not null)
+            {
+                await galleryModule.InvokeVoidAsync("initialize", $"fabric-canvas-{uniqueId}", Photos[currentPhotoIndex].FilePath, isDrawingMode);
+                await galleryOverlay.FocusAsync();
+            }
+        }
+        wasVisibleLastRender = IsVisible;
+    }
+
+    private async Task HandleKeyDown(KeyboardEventArgs e)
+    {
+        if (e.CtrlKey && (e.Key == "z" || e.Key == "Z")) await Undo();
+        else if (e.CtrlKey && (e.Key == "y" || e.Key == "Y")) await Redo();
+        else
+        {
+            switch (e.Key)
+            {
+                case "ArrowRight": await ShowNext(); break;
+                case "ArrowLeft": await ShowPrevious(); break;
+                case "Escape": await CloseGallery(); break;
+                case "p": case "P": await ToggleDrawing(); break;
+                case "r": case "R": await ResetZoom(); break;
+            }
+        }
+    }
+
+    private async Task ShowNext() { currentPhotoIndex = (currentPhotoIndex + 1) % Photos.Count; await UpdateImage(); }
+    private async Task ShowPrevious() { currentPhotoIndex = (currentPhotoIndex - 1 + Photos.Count) % Photos.Count; await UpdateImage(); }
+
+    private async Task UpdateImage()
+    {
+        isDrawingMode = false;
+        activeTool = "pencil";
+        if (galleryModule is not null) await galleryModule.InvokeVoidAsync("setImage", Photos[currentPhotoIndex].FilePath, isDrawingMode);
+    }
+
+    private async Task ToggleDrawing()
+    {
+        isDrawingMode = !isDrawingMode;
+        activeTool = "pencil";
+        if (galleryModule is not null)
+        {
+            await galleryModule.InvokeVoidAsync("toggleDrawing", isDrawingMode);
+            if (isDrawingMode)
+            {
+                await galleryModule.InvokeVoidAsync("setTool", "pencil");
+                await SetBrushColor(brushColor);
+            }
+        }
+    }
+
+    private async Task SetTool(string toolName)
+    {
+        activeTool = toolName;
+        if (galleryModule is not null) await galleryModule.InvokeVoidAsync("setTool", toolName);
+    }
+
+    private async Task SetBrushColor(string color)
+    {
+        brushColor = color;
+        if (galleryModule is not null) await galleryModule.InvokeVoidAsync("setBrushColor", color);
+    }
+
+    private async Task OnColorPickerChange(ChangeEventArgs e) { if (e.Value != null) await SetBrushColor(e.Value.ToString()); }
+    private async Task Undo() { if (galleryModule != null) await galleryModule.InvokeVoidAsync("undo"); }
+    private async Task Redo() { if (galleryModule != null) await galleryModule.InvokeVoidAsync("redo"); }
+    private async Task ClearCanvas() { if (galleryModule != null) await galleryModule.InvokeVoidAsync("clearCanvas"); }
+    private async Task ZoomIn() { if (galleryModule != null) await galleryModule.InvokeVoidAsync("zoomIn"); }
+    private async Task ZoomOut() { if (galleryModule != null) await galleryModule.InvokeVoidAsync("zoomOut"); }
+    private async Task ResetZoom() { if (galleryModule != null) await galleryModule.InvokeVoidAsync("resetZoom"); }
+    private async Task DownloadImage() { if (galleryModule != null) await galleryModule.InvokeVoidAsync("downloadImage", $"photo-{Photos[currentPhotoIndex].Id}.png"); }
+
+    private async Task CloseGallery()
+    {
+        isDrawingMode = false;
+        if (galleryModule != null) await galleryModule.InvokeVoidAsync("destroy");
+        await OnClose.InvokeAsync();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (galleryModule != null)
+        {
+            try { await galleryModule.InvokeVoidAsync("destroy"); } catch { }
+            await galleryModule.DisposeAsync();
+        }
+    }
+}

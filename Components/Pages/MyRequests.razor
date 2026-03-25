@@ -1,0 +1,245 @@
+﻿@page "/myrequests"
+@rendermode InteractiveServer
+
+@using Microsoft.AspNetCore.Authorization
+@using Microsoft.EntityFrameworkCore
+@using WorkOrderSystem.Data
+@using WorkOrderSystem.Models
+@using Microsoft.AspNetCore.Identity
+@using System.Security.Claims
+
+@attribute [Authorize]
+
+@inject IServiceScopeFactory ScopeFactory
+@inject AuthenticationStateProvider _authenticationStateProvider
+
+<PageTitle>我的申請</PageTitle>
+
+@* --- 嵌入 CSS 樣式 (統一風格) --- *@
+<style>
+    .task-card-mobile {
+        border: none !important;
+        border-radius: 12px !important;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08) !important;
+        position: relative;
+        background-color: white;
+    }
+
+    .card-title-lg {
+        font-size: 1.25rem;
+        line-height: 1.3;
+    }
+</style>
+
+<h3>我的申請</h3>
+<p>這裡是您過去所有提交過的工單申請紀錄。</p>
+
+@if (ongoingTasks == null)
+{
+    <p><em>正在載入工單...</em></p>
+}
+else
+{
+    @* --- 1. 進行中工單 --- *@
+    <h4>進行中工單 (@ongoingTasks.Count)</h4>
+    @if (ongoingTasks.Any())
+    {
+        @* --- 桌面版表格 (維持原樣) --- *@
+        <div class="table-responsive d-none d-md-block">
+            <table class="table table-hover align-middle">
+                <thead>
+                    <tr>
+                        <th>狀態</th>
+                        <th>標題</th>
+                        <th>客戶名稱</th>
+                        <th>申請日期</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var task in ongoingTasks)
+                    {
+                        <tr>
+                            <td><span class="badge @GetStatusBadgeClass(task.Status)">@task.Status</span></td>
+                            <td>@task.Title</td>
+                            <td>@task.CustomerName</td>
+                            <td>@task.CreatedAt.ToString("yyyy-MM-dd HH:mm")</td>
+                            <td>
+                                <a href="/workorders/details/@task.Id" class="btn btn-info btn-sm">查看詳情</a>
+                                @if (task.Status == "待指派" || task.Status == "處理中")
+                                {
+                                    <a href="/workorders/edit/@task.Id" class="btn btn-secondary btn-sm ms-1">編輯</a>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+
+        @* --- 手機版卡片列表 (新增) --- *@
+        <div class="d-md-none">
+            @foreach (var task in ongoingTasks)
+            {
+                <div class="card mb-3 task-card-mobile border-top border-5 @GetStatusBorderClass(task.Status)">
+                    <div class="card-body p-3">
+                        @* 標題 (藍色大字) *@
+                        <a href="/workorders/details/@task.Id" class="text-decoration-none" style="width: 100%;">
+                            <h5 class="card-title mb-1 fw-bold text-primary card-title-lg">
+                                @task.Title
+                            </h5>
+                        </a>
+
+                        @* 狀態與客戶名稱 *@
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <span class="badge @GetStatusBadgeClass(task.Status)">@task.Status</span>
+                            <span class="text-dark fw-bold small"><i class="bi bi-building me-1"></i>@task.CustomerName</span>
+                        </div>
+
+                        <hr class="my-2" />
+
+                        @* 詳細資訊 *@
+                        <p class="card-text mb-2 small text-muted"><strong>申請時間:</strong> @task.CreatedAt.ToString("yyyy-MM-dd HH:mm")</p>
+
+                        @* 操作按鈕 *@
+                        <div class="d-flex gap-2 mt-3">
+                            <a href="/workorders/details/@task.Id" class="btn btn-info w-100">查看詳情</a>
+                            @if (task.Status == "待指派" || task.Status == "處理中")
+                            {
+                                <a href="/workorders/edit/@task.Id" class="btn btn-secondary w-100">編輯</a>
+                            }
+                        </div>
+                    </div>
+                </div>
+            }
+        </div>
+    }
+    else
+    {
+        <p>目前沒有進行中的工單。</p>
+    }
+
+    @* --- 2. 已完成工單 --- *@
+    <h4 class="mt-5">已完成工單 (@completedTasks.Count)</h4>
+    @if (completedTasks.Any())
+    {
+        @* --- 桌面版表格 (維持原樣) --- *@
+        <div class="table-responsive d-none d-md-block">
+            <table class="table table-hover align-middle">
+                <thead>
+                    <tr>
+                        <th>狀態</th>
+                        <th>標題</th>
+                        <th>客戶名稱</th>
+                        <th>完工日期</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var task in completedTasks)
+                    {
+                        <tr>
+                            <td><span class="badge @GetStatusBadgeClass(task.Status)">@task.Status</span></td>
+                            <td>@task.Title</td>
+                            <td>@task.CustomerName</td>
+                            <td>@(task.CompletedAt?.ToString("yyyy-MM-dd HH:mm") ?? "N/A")</td>
+                            <td>
+                                <a href="/workorders/details/@task.Id" class="btn btn-info btn-sm">查看詳情</a>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+
+        @* --- 手機版卡片列表 (新增) --- *@
+        <div class="d-md-none">
+            @foreach (var task in completedTasks)
+            {
+                <div class="card mb-3 task-card-mobile border-top border-5 @GetStatusBorderClass(task.Status)">
+                    <div class="card-body p-3">
+                        <a href="/workorders/details/@task.Id" class="text-decoration-none" style="width: 100%;">
+                            <h5 class="card-title mb-1 fw-bold @(task.Status == "已完成" ? "text-success" : "text-danger") card-title-lg">
+                                @task.Title
+                            </h5>
+                        </a>
+
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <span class="badge @GetStatusBadgeClass(task.Status)">@task.Status</span>
+                            <span class="text-dark fw-bold small"><i class="bi bi-building me-1"></i>@task.CustomerName</span>
+                        </div>
+
+                        <hr class="my-2" />
+
+                        <p class="card-text mb-3 small text-muted"><strong>完工/退回時間:</strong> @(task.CompletedAt?.ToString("yyyy-MM-dd HH:mm") ?? task.UpdatedAt.ToString("yyyy-MM-dd HH:mm"))</p>
+
+                        <a href="/workorders/details/@task.Id" class="btn btn-secondary w-100 mt-2">查看詳情</a>
+                    </div>
+                </div>
+            }
+        </div>
+    }
+    else
+    {
+        <p>目前沒有已完成的工單。</p>
+    }
+}
+
+
+@code {
+    private List<WorkOrder>? ongoingTasks;
+    private List<WorkOrder>? completedTasks;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var authState = await _authenticationStateProvider.GetAuthenticationStateAsync();
+        var user = authState.User;
+        var userId = user.FindFirst(c => c.Type == ClaimTypes.NameIdentifier)?.Value;
+
+        if (!string.IsNullOrEmpty(userId))
+        {
+            using (var scope = ScopeFactory.CreateScope())
+            {
+                var context = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                var allTasks = await context.WorkOrders
+                    .Where(wo => wo.RequesterId == userId)
+                    .OrderByDescending(wo => wo.CreatedAt)
+                    .ToListAsync();
+
+                // 進行中工單：未完成，未退回
+                ongoingTasks = allTasks.Where(wo => wo.Status != "已完成" && wo.Status != "已退回").ToList();
+                // 已完成工單：已完成 或 已退回
+                completedTasks = allTasks.Where(wo => wo.Status == "已完成" || wo.Status == "已退回").ToList();
+            }
+        }
+    }
+
+    private string GetStatusBadgeClass(string status)
+    {
+        return status switch
+        {
+            "待指派" => "bg-warning text-dark",
+            "處理中" => "bg-info text-dark",
+            "待主管審核" => "bg-primary",
+            "待管理者核銷" => "bg-info",
+            "已完成" => "bg-success",
+            "已退回" => "bg-danger",
+            _ => "bg-secondary"
+        };
+    }
+
+    // ✨ 新增：用於卡片頂部邊框的顏色，讓視覺更一致
+    private string GetStatusBorderClass(string status)
+    {
+        return status switch
+        {
+            "待指派" => "border-warning",
+            "處理中" => "border-info",
+            "待主管審核" => "border-primary",
+            "待管理者核銷" => "border-info",
+            "已完成" => "border-success",
+            "已退回" => "border-danger",
+            _ => "border-secondary"
+        };
+    }
+}

@@ -1,0 +1,18 @@
+﻿@using WorkOrderSystem.Data
+@using Microsoft.AspNetCore.Identity
+
+@inject UserManager<AppUser> UserManager
+
+<AuthorizeView>
+    <Authorized>
+        <span class="nav-link text-dark">你好, @(context.User.Identity?.Name)!</span>
+        <form action="Account/Logout" method="post">
+            <AntiforgeryToken />
+            <button type="submit" class="nav-link btn btn-link">登出</button>
+        </form>
+    </Authorized>
+    <NotAuthorized>
+        @* 為了以防萬一，我們也保留這裡的登入連結 *@
+        <a class="nav-link" href="Account/Login">登入</a>
+    </NotAuthorized>
+</AuthorizeView>

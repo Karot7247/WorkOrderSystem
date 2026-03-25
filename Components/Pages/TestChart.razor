@@ -1,0 +1,63 @@
+﻿@*
+@page "/testchart"
+
+@using PSC.Blazor.Components.Chartjs
+@using PSC.Blazor.Components.Chartjs.Enums
+@using PSC.Blazor.Components.Chartjs.Models
+@using PSC.Blazor.Components.Chartjs.Models.Common
+@using PSC.Blazor.Components.Chartjs.Models.Bar
+
+<h3>PSC Chart.js 測試</h3>
+
+<Chart Config="_barChartConfig" Height="350px" Width="600px" />
+
+@code {
+    private BarChartConfig _barChartConfig = new();
+
+    protected override void OnInitialized()
+    {
+        _barChartConfig = new BarChartConfig
+            {
+                Options = new Options
+                {
+                    Responsive = true,
+                    Plugins = new Plugins
+                    {
+                        Legend = new Legend { Display = true, PositionString = "top" },
+                        Title = new Title { Display = true, Text = "每月工單數量統計" }
+                    },
+                    Scales = new Dictionary<string, Axis>
+                {
+                    { Scales.YAxisId, new Axis { BeginAtZero = true, Ticks = new Ticks { StepSize = 1 } } }
+                }
+                },
+                // ✨ 最終、最精準的修正：
+                // 初始化一個「專門給 BarDataset 使用」的 Data 物件，而不是通用的 Data 物件。
+                Data = new Data<BarDataset>()
+            };
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            // 由於 _barChartConfig.Data 已經是正確的類型，
+            // 現在我們可以安全地把資料填進去。
+            _barChartConfig.Data.Labels = new List<string> { "一月", "二月", "三月", "四月" };
+
+            var dataset = new BarDataset
+                {
+                    Label = "工單數量",
+                    Data = new List<decimal?> { 5, 8, 12, 7 },
+                    BackgroundColor = new List<string> { "rgba(54, 162, 235, 0.6)" },
+                    BorderColor = new List<string> { "rgb(54, 162, 235)" },
+                    BorderWidth = 1
+                };
+            _barChartConfig.Data.Datasets.Add(dataset);
+
+            StateHasChanged();
+            await Task.Delay(1);
+        }
+    }
+}
+*@

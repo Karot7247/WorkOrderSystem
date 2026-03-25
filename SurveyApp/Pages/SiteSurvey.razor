@@ -1,0 +1,829 @@
+﻿@page "/site-survey"
+@page "/construction-report"
+@using System.Text.Json
+@using System.Net.Http.Json
+@using Microsoft.AspNetCore.Components.Authorization
+@using System.Security.Claims
+
+@inject IJSRuntime JSRuntime
+@inject ILogger<SiteSurvey> Logger
+@inject HttpClient Http
+@inject NavigationManager NavManager
+@inject AuthenticationStateProvider AuthStateProvider
+
+@implements IAsyncDisposable
+@implements IDisposable
+
+<style>
+    /* --- 1. 相機介面 --- */
+    .camera-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100vw;
+        height: 100dvh;
+        background-color: #000;
+        z-index: 2000;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        touch-action: none;
+        overscroll-behavior: none;
+        overflow: hidden;
+        padding-top: env(safe-area-inset-top);
+        padding-bottom: env(safe-area-inset-bottom);
+        padding-left: env(safe-area-inset-left);
+        padding-right: env(safe-area-inset-right);
+    }
+
+    .camera-video {
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        background-color: #000;
+    }
+
+    .flash-effect {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background-color: white;
+        opacity: 0;
+        pointer-events: none;
+        z-index: 2005;
+    }
+
+    .flash-animation {
+        animation: flashAnim 0.3s ease-out;
+    }
+
+    @@keyframes flashAnim {
+        0% {
+            opacity: 0.8;
+        }
+
+        100% {
+            opacity: 0;
+        }
+    }
+
+    /* --- 控制層 --- */
+    .camera-controls {
+        position: absolute;
+        width: 100%;
+        height: 100%;
+        pointer-events: none;
+        top: 0;
+        left: 0;
+    }
+
+    /* --- 按鈕樣式 --- */
+    .shutter-btn {
+        pointer-events: auto;
+        position: absolute;
+        width: 76px;
+        height: 76px;
+        border-radius: 50%;
+        background-color: white;
+        border: 4px solid rgba(255, 255, 255, 0.5);
+        box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+        cursor: pointer;
+        bottom: 12%;
+        left: calc(50% - 38px);
+        transform: none;
+        z-index: 2002;
+    }
+
+        .shutter-btn:active {
+            transform: scale(0.9);
+            background-color: #ddd;
+        }
+
+    .close-camera-btn {
+        pointer-events: auto;
+        position: absolute;
+        top: 20px;
+        right: 20px;
+        background: rgba(0,0,0,0.5);
+        color: white;
+        border: 2px solid rgba(255,255,255,0.3);
+        border-radius: 50%;
+        width: 44px;
+        height: 44px;
+        font-size: 24px;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        z-index: 2002;
+    }
+
+    .torch-btn {
+        pointer-events: auto;
+        position: absolute;
+        top: 20px;
+        right: 80px;
+        background: rgba(0,0,0,0.5);
+        color: white;
+        border: 2px solid rgba(255,255,255,0.3);
+        border-radius: 50%;
+        width: 44px;
+        height: 44px;
+        font-size: 20px;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        z-index: 2002;
+        transition: all 0.2s;
+    }
+
+        .torch-btn.active {
+            background-color: rgba(255, 255, 0, 0.8);
+            color: black;
+            border-color: yellow;
+            box-shadow: 0 0 10px yellow;
+        }
+
+    .location-badge {
+        position: absolute;
+        top: 35px;
+        left: 20px;
+        background: rgba(0, 0, 0, 0.5);
+        color: white;
+        padding: 5px 12px;
+        border-radius: 20px;
+        font-size: 13px;
+        border: 1px solid rgba(255,255,255,0.2);
+        z-index: 2002;
+    }
+
+    .preview-thumbnail {
+        pointer-events: auto;
+        position: absolute;
+        bottom: 13%;
+        left: 30px;
+        width: 60px;
+        height: 60px;
+        border-radius: 8px;
+        border: 2px solid rgba(255,255,255,0.8);
+        background-color: #222;
+        overflow: hidden;
+        cursor: pointer;
+        z-index: 2002;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+    }
+
+        .preview-thumbnail img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+    /* --- 變焦滑桿 --- */
+    .zoom-container {
+        pointer-events: auto;
+        position: absolute;
+        right: 20px;
+        bottom: 160px;
+        width: 40px;
+        height: 220px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        background: rgba(0, 0, 0, 0.4);
+        border-radius: 20px;
+        padding: 10px 0;
+        z-index: 2003;
+        backdrop-filter: blur(2px);
+        border: 1px solid rgba(255,255,255,0.1);
+    }
+
+    .zoom-range {
+        writing-mode: bt-lr;
+        -webkit-appearance: slider-vertical;
+        width: 100%;
+        height: 160px;
+        margin: 10px 0;
+        cursor: pointer;
+    }
+
+    .zoom-label {
+        color: white;
+        font-size: 11px;
+        text-shadow: 1px 1px 2px black;
+        font-weight: bold;
+        font-family: monospace;
+    }
+
+    /* --- 橫向模式調整 --- */
+    @@media (orientation: landscape) {
+        .shutter-btn {
+            bottom: auto;
+            left: auto;
+            top: calc(50% - 38px);
+            right: 40px;
+            transform: none;
+        }
+
+            .shutter-btn:active {
+                transform: scale(0.9);
+            }
+
+        .preview-thumbnail {
+            left: 30px;
+            bottom: 30px;
+            top: auto;
+        }
+
+        .zoom-container {
+            right: 140px;
+            bottom: auto;
+            top: 50%;
+            transform: translateY(-50%);
+            height: 200px;
+        }
+
+        .close-camera-btn {
+            top: 20px;
+            right: 20px;
+        }
+
+        .torch-btn {
+            top: 20px;
+            right: 80px;
+        }
+
+        .location-badge {
+            top: 20px;
+            left: 20px;
+        }
+    }
+
+    /* --- 照片預覽 --- */
+    .photo-preview-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100vw;
+        height: 100dvh;
+        background-color: rgba(0, 0, 0, 0.95);
+        z-index: 3000;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        padding: 20px;
+    }
+
+    .photo-preview-img {
+        max-width: 100%;
+        max-height: 85%;
+        object-fit: contain;
+        border: 2px solid #555;
+        box-shadow: 0 0 20px rgba(0,0,0,0.8);
+    }
+
+    .preview-close-btn {
+        position: absolute;
+        top: 20px;
+        right: 20px;
+        color: white;
+        background: rgba(255, 255, 255, 0.2);
+        border: 1px solid white;
+        border-radius: 50%;
+        width: 40px;
+        height: 40px;
+        font-size: 20px;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        cursor: pointer;
+    }
+</style>
+
+<article class="pa-4" style="padding: 1.5rem;">
+    <h3 style="color: @(IsConstructionMode ? "#198754" : "#0d6efd")">
+        @(IsConstructionMode ? "🚧 施工回報" : "📸 場堪拍照")
+    </h3>
+
+    <div style="background-color: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #dee2e6;">
+        <div style="margin-bottom: 15px; border-bottom: 1px solid #ddd; padding-bottom: 15px;">
+            <label style="display: block; font-weight: bold; margin-bottom: 5px; color: #666;">選擇案件 (僅顯示指派給您的)：</label>
+            @if (isLockedMode)
+            {
+                <div class="alert alert-info d-flex justify-content-between align-items-center p-3 mb-0 border shadow-sm">
+                    <div style="overflow: hidden;">
+                        <span class="badge bg-primary mb-2">目前案件</span><br />
+                        <div class="text-primary fw-bold mb-1" style="font-size: 1.3rem;">@surveyTitle</div>
+                        <div class="text-dark d-flex align-items-center">
+                            <i class="bi bi-building me-2 text-secondary"></i>
+                            <strong>@surveyCustomerName</strong>
+                        </div>
+                        <small class="text-muted mt-1 d-block">工單編號: @selectedWorkOrderId</small>
+                    </div>
+                    <button class="btn btn-sm btn-outline-secondary ms-2" @onclick="UnlockMode" style="white-space: nowrap;"><i class="bi bi-pencil-square"></i> 變更</button>
+                </div>
+            }
+            else
+            {
+                <div style="display: flex; gap: 10px;">
+                    <button class="btn @(IsConstructionMode ? "btn-outline-success" : "btn-outline-primary")" @onclick="LoadWorkOrders" disabled="@isLoadingOrders" style="white-space: nowrap;">
+                        @(isLoadingOrders ? "載入中..." : "🔄 更新")
+                    </button>
+                    <select class="form-select" @onchange="OnWorkOrderSelected" value="@selectedWorkOrderId">
+                        <option value="0">-- 建立現場暫存 (無工單) --</option>
+                        @foreach (var order in workOrders)
+                        {
+                            <option value="@order.Id">@order.Title @(string.IsNullOrEmpty(order.CustomerName) ? "" : $"【{order.CustomerName}】")</option>
+                        }
+                    </select>
+                </div>
+                @if (selectedWorkOrderId == 0)
+                {
+                    <div class="text-success mt-2 small"><i class="bi bi-info-circle"></i> 目前模式：建立新暫存紀錄 (供日後匯入)</div>
+                }
+            }
+            @if (!string.IsNullOrEmpty(apiErrorMessage))
+            {
+                <small class="text-danger">@apiErrorMessage</small>
+            }
+        </div>
+
+        <div style="margin-bottom: 10px;">
+            <label style="display: block; font-weight: bold; margin-bottom: 5px;">標題 / 名稱：</label>
+            <input type="text" @bind="surveyTitle" @bind:after="SaveData"
+                   placeholder="@(selectedWorkOrderId == 0 ? "請輸入暫存標題 (必填)" : "選擇工單後自動帶入")"
+                   style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px;"
+                   disabled="@(selectedWorkOrderId > 0)" />
+        </div>
+
+        <div>
+            <label style="display: block; font-weight: bold; margin-bottom: 5px;">目前位置 (浮水印用)：</label>
+            <div style="display: flex; gap: 10px;">
+                <input type="text" @bind="surveyAddress" @bind:after="SaveData" placeholder="點擊相機可自動取得"
+                       style="flex-grow: 1; padding: 8px; border: 1px solid #ccc; border-radius: 4px;" />
+            </div>
+        </div>
+    </div>
+
+    <div class="mb-4">
+        <button class="btn btn-primary w-100 py-3 fw-bold shadow-sm" @onclick="StartCameraMode" style="font-size: 1.2rem; border-radius: 10px; height: 80px;">
+            <span class="oi oi-camera-slr me-2" style="font-size: 1.5rem;"></span>
+            <div>啟動相機拍照</div>
+        </button>
+    </div>
+
+    @if (isCameraActive)
+    {
+        <div class="camera-overlay">
+            <video @ref="videoElement" autoplay playsinline muted class="camera-video"></video>
+            <div class="@flashClass"></div>
+
+            <div class="camera-controls">
+                <div class="location-badge">
+                    @(currentLocation == null ? "📍 定位中..." : "✅ 已定位")
+                </div>
+
+                <button class="torch-btn @(isTorchOn ? "active" : "")" @onclick="ToggleTorch">
+                    <i class="bi bi-lightning-fill"></i>
+                </button>
+
+                <button class="close-camera-btn" @onclick="StopCameraMode">✕</button>
+
+                @if (zoomSupported)
+                {
+                    <div class="zoom-container">
+                        <span class="zoom-label">@maxZoom.ToString("0.0")x</span>
+                        <input type="range" class="zoom-range"
+                               min="@minZoom" max="@maxZoom" step="@stepZoom"
+                               value="@currentZoom"
+                               @oninput="OnZoomChanged" />
+                        <span class="zoom-label">@minZoom.ToString("0.0")x</span>
+                    </div>
+                }
+
+                @if (!string.IsNullOrEmpty(lastPhotoUrl))
+                {
+                    <div class="preview-thumbnail" @onclick="StopCameraMode"><img src="@lastPhotoUrl" /></div>
+                }
+                <button class="shutter-btn" @onclick="CapturePhoto"></button>
+            </div>
+        </div>
+    }
+
+    <hr class="my-4" />
+
+    @if (photos.Any())
+    {
+        <div class="mb-4 p-3" style="background-color: #e8f5e9; border: 1px solid #c8e6c9; border-radius: 8px;">
+            <h4>準備完成？</h4>
+            <p>已拍攝 <strong>@photos.Count</strong> 張照片</p>
+            <div class="form-check mb-2">
+                <input class="form-check-input" type="checkbox" @bind="addWatermarkEnabled" id="watermarkCheck">
+                <label class="form-check-label" for="watermarkCheck">加入浮水印</label>
+            </div>
+            <button class="btn @(selectedWorkOrderId == 0 ? "btn-success" : "btn-primary") btn-lg w-100" @onclick="HandleSubmit" disabled="@isUploading">
+                @(isUploading ? uploadStatusMessage : (selectedWorkOrderId == 0 ? "儲存暫存" : "上傳"))
+            </button>
+            @if (!string.IsNullOrEmpty(uploadMessage))
+            {
+                <div class="mt-2 text-success fw-bold">@uploadMessage</div>
+            }
+        </div>
+    }
+
+    <h3>拍攝清單 (@photos.Count 張)</h3>
+    <ul style="list-style-type: none; padding: 0;">
+        @foreach (var photo in photos)
+        {
+            <li style="display: flex; align-items: start; margin-bottom: 1rem; border-bottom: 1px solid #eee; padding-bottom: 1rem;">
+                <img src="@photo.ImageDataUrl" @onclick="() => OpenPreview(photo.ImageDataUrl)"
+                     style="width:150px; height:auto; margin-right: 15px; border: 1px solid #eee; cursor: pointer;" />
+                <div style="flex-grow: 1; margin-right: 10px;">
+                    <textarea @bind="photo.Notes" @bind:after="SaveData" style="width: 100%; min-height: 80px;" rows="3" placeholder="備註..."></textarea>
+                </div>
+                <button class="btn-delete" @onclick="() => DeletePhoto(photo)" style="background-color: #ff4d4d; color: white; border: none; padding: 5px 10px;">刪除</button>
+            </li>
+        }
+    </ul>
+
+    @if (!string.IsNullOrEmpty(previewImageUrl))
+    {
+        <div class="photo-preview-overlay" @onclick="ClosePreview">
+            <button class="preview-close-btn" @onclick="ClosePreview">✕</button>
+            <img src="@previewImageUrl" class="photo-preview-img" @onclick:stopPropagation="true" />
+        </div>
+    }
+</article>
+
+@code {
+    private const string ApiBaseUrl = "";
+    private bool IsConstructionMode => NavManager.Uri.Contains("construction-report");
+    private bool isCameraActive = false;
+    private bool isLockedMode = false;
+    private string flashClass = "flash-effect";
+    private string lastPhotoUrl = "";
+    private bool isTorchOn = false;
+
+    public class SurveyPhoto { public string PhotoId { get; set; } = Guid.NewGuid().ToString(); public string ImageDataUrl { get; set; } public string Notes { get; set; } = string.Empty; }
+    public class SurveyWorkOrderDto { public int Id { get; set; } public string Title { get; set; } public string? Address { get; set; } public string? CustomerName { get; set; } }
+    public class SurveyDraftData { public int WorkOrderId { get; set; } public string Title { get; set; } public string Address { get; set; } public string CustomerName { get; set; } public List<SurveyPhoto> Photos { get; set; } }
+
+    public class CameraCapabilities
+    {
+        public int Width { get; set; }
+        public int Height { get; set; }
+        public bool ZoomSupported { get; set; }
+        public double MinZoom { get; set; }
+        public double MaxZoom { get; set; }
+        public double StepZoom { get; set; }
+    }
+
+    private List<CameraDevice> availableCameras = new();
+    public class CameraDevice { public string DeviceId { get; set; } public string Label { get; set; } }
+
+    private bool zoomSupported = false;
+    private double minZoom = 1;
+    private double maxZoom = 1;
+    private double stepZoom = 0.1;
+    private double currentZoom = 1.0;
+
+    private ElementReference videoElement;
+    private List<SurveyPhoto> photos = new List<SurveyPhoto>();
+    private IJSObjectReference? cameraModule;
+    private IJSObjectReference? dbModule;
+    private DotNetObjectReference<SiteSurvey>? dotNetHelper;
+
+    private string surveyTitle = "";
+    private string surveyAddress = "";
+    private string surveyCustomerName = "";
+    private int selectedWorkOrderId = 0;
+    private LocationData? currentLocation = null;
+    private List<SurveyWorkOrderDto> workOrders = new();
+    private bool isLoadingOrders = false;
+    private string? apiErrorMessage = null;
+    private bool isUploading = false;
+    private string? uploadMessage = null;
+    private string uploadStatusMessage = "處理中...";
+    private bool addWatermarkEnabled = true;
+
+    protected override async Task OnInitializedAsync() { NavManager.LocationChanged += OnLocationChanged; }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        try
+        {
+            var uri = NavManager.ToAbsoluteUri(NavManager.Uri);
+            if (string.IsNullOrEmpty(uri.Query) || uri.Query.Length <= 1) return;
+            var queryDictionary = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var queryParts = uri.Query.TrimStart('?').Split('&');
+            foreach (var part in queryParts)
+            {
+                var kv = part.Split('=');
+                if (kv.Length == 2) { queryDictionary[kv[0]] = System.Net.WebUtility.UrlDecode(kv[1]); }
+            }
+            int tId = 0;
+            if (queryDictionary.TryGetValue("taskId", out var tIdStr) && int.TryParse(tIdStr, out tId))
+            {
+                if (selectedWorkOrderId != tId)
+                {
+                    selectedWorkOrderId = tId; isLockedMode = true;
+                    if (queryDictionary.TryGetValue("title", out var t)) surveyTitle = t;
+                    if (queryDictionary.TryGetValue("address", out var a)) surveyAddress = a;
+                    if (queryDictionary.TryGetValue("customer", out var c)) surveyCustomerName = c;
+                    if (!workOrders.Any(w => w.Id == selectedWorkOrderId))
+                    {
+                        workOrders.Add(new SurveyWorkOrderDto { Id = selectedWorkOrderId, Title = surveyTitle, Address = surveyAddress, CustomerName = surveyCustomerName });
+                    }
+                    await SaveData();
+                }
+            }
+        }
+        catch { }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            try
+            {
+                var v = DateTime.Now.Ticks;
+                dbModule = await JSRuntime.InvokeAsync<IJSObjectReference>("import", $"./js/db.js?v={v}");
+                await LoadData();
+            }
+            catch { }
+        }
+    }
+
+    private async Task LoadWorkOrders()
+    {
+        isLoadingOrders = true; apiErrorMessage = null;
+        try
+        {
+            if (!Http.DefaultRequestHeaders.Contains("ngrok-skip-browser-warning"))
+                Http.DefaultRequestHeaders.Add("ngrok-skip-browser-warning", "true");
+
+            var modeParam = IsConstructionMode ? "construction" : "survey";
+            var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+            var user = authState.User;
+            var userId = user.FindFirst(c => c.Type == ClaimTypes.NameIdentifier)?.Value
+                         ?? user.FindFirst("sub")?.Value
+                         ?? user.FindFirst("oid")?.Value;
+
+            var url = $"{ApiBaseUrl}/api/WorkOrders/list?mode={modeParam}&engineerId={userId}";
+            var list = await Http.GetFromJsonAsync<List<SurveyWorkOrderDto>>(url) ?? new();
+
+            workOrders.Clear();
+            foreach (var item in list) { workOrders.Add(item); }
+
+            if (workOrders.Count == 0) apiErrorMessage = "目前沒有指派給您的工單。";
+        }
+        catch (Exception ex)
+        {
+            apiErrorMessage = $"連線失敗: {ex.Message}";
+            Logger.LogError(ex, "API 連線失敗");
+        }
+        finally { isLoadingOrders = false; }
+    }
+
+    private async Task OnWorkOrderSelected(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), out int selectedId))
+        {
+            selectedWorkOrderId = selectedId;
+            if (selectedId == 0) { surveyTitle = ""; surveyCustomerName = ""; }
+            else
+            {
+                var selectedOrder = workOrders.FirstOrDefault(w => w.Id == selectedId);
+                if (selectedOrder != null)
+                {
+                    surveyTitle = selectedOrder.Title; surveyCustomerName = selectedOrder.CustomerName ?? "";
+                    if (!string.IsNullOrEmpty(selectedOrder.Address)) surveyAddress = selectedOrder.Address;
+                }
+            }
+            await SaveData();
+        }
+    }
+
+    private void UnlockMode() { isLockedMode = false; selectedWorkOrderId = 0; surveyTitle = ""; surveyCustomerName = ""; }
+
+    private async Task HandleSubmit()
+    {
+        isUploading = true; uploadMessage = null;
+        try
+        {
+            List<SurveyPhoto> photosToProcess = new List<SurveyPhoto>();
+            if (addWatermarkEnabled && cameraModule != null)
+            {
+                var timeString = DateTime.Now.ToString("yyyy/MM/dd HH:mm");
+                var addrString = string.IsNullOrEmpty(surveyAddress) ? "位置未定" : surveyAddress;
+                if (addrString.Length > 60) addrString = addrString.Substring(0, 59) + "...";
+                int count = 0;
+                foreach (var p in photos)
+                {
+                    count++; uploadStatusMessage = $"壓印浮水印 ({count}/{photos.Count})..."; StateHasChanged();
+                    var newBase64 = await cameraModule.InvokeAsync<string>("addWatermark", p.ImageDataUrl, addrString, timeString);
+                    photosToProcess.Add(new SurveyPhoto { PhotoId = p.PhotoId, ImageDataUrl = newBase64, Notes = p.Notes });
+                }
+            }
+            else { photosToProcess = photos; }
+
+            if (selectedWorkOrderId == 0)
+            {
+                if (string.IsNullOrWhiteSpace(surveyTitle)) throw new Exception("暫存模式請務必填寫「標題/名稱」。");
+                await UploadToDraftApi(photosToProcess); uploadMessage = "✅ 暫存建立成功！";
+            }
+            else { await UploadToWorkOrderApi(photosToProcess); }
+            await ClearLocalData();
+        }
+        catch (Exception ex) { uploadMessage = $"❌ 失敗: {ex.Message}"; Logger.LogError(ex, "提交過程錯誤"); }
+        finally { isUploading = false; }
+    }
+
+    private async Task UploadToDraftApi(List<SurveyPhoto> finalPhotos)
+    {
+        uploadStatusMessage = "上傳暫存..."; StateHasChanged();
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        var userId = authState.User.FindFirst(c => c.Type == ClaimTypes.NameIdentifier)?.Value;
+        var payload = new { Title = surveyTitle, Address = surveyAddress, CreatorId = userId, Photos = finalPhotos.Select(p => new { ImageDataUrl = p.ImageDataUrl, Notes = p.Notes, Category = IsConstructionMode ? "施工中" : "施工前" }).ToList() };
+        var response = await Http.PostAsJsonAsync($"{ApiBaseUrl}/api/Drafts/create", payload);
+        if (!response.IsSuccessStatusCode) { var errorMsg = await response.Content.ReadAsStringAsync(); throw new Exception($"API 錯誤: {response.StatusCode} - {errorMsg}"); }
+    }
+
+    private async Task UploadToWorkOrderApi(List<SurveyPhoto> finalPhotos)
+    {
+        uploadStatusMessage = "上傳伺服器..."; StateHasChanged();
+        var payload = new { WorkOrderId = selectedWorkOrderId, Address = surveyAddress, UploadMode = IsConstructionMode ? "construction" : "survey", Photos = finalPhotos };
+        var response = await Http.PostAsJsonAsync($"{ApiBaseUrl}/api/WorkOrders/upload", payload);
+        if (response.IsSuccessStatusCode) { uploadMessage = "✅ 上傳成功！"; } else { var errorMsg = await response.Content.ReadAsStringAsync(); throw new Exception($"API 錯誤: {response.StatusCode} - {errorMsg}"); }
+    }
+
+    private string? previewImageUrl = null;
+    private void OpenPreview(string url) { previewImageUrl = url; }
+    private void ClosePreview() { previewImageUrl = null; }
+
+    // --- 相機控制與變焦 ---
+
+    private async Task StartCameraMode()
+    {
+        isCameraActive = true; await Task.Delay(100);
+
+        dotNetHelper = DotNetObjectReference.Create(this);
+        var v = DateTime.Now.Ticks;
+        cameraModule = await JSRuntime.InvokeAsync<IJSObjectReference>("import", $"./js/camera.js?v={v}");
+
+        if (cameraModule != null)
+        {
+            await StartCamera(null);
+            availableCameras = await cameraModule.InvokeAsync<List<CameraDevice>>("getVideoDevices");
+            await cameraModule.InvokeVoidAsync("enterFullScreen");
+        }
+
+        if (currentLocation == null) await GetLocation();
+    }
+
+    private async Task StartCamera(string? deviceId)
+    {
+        if (cameraModule == null) return;
+
+        var caps = await cameraModule.InvokeAsync<CameraCapabilities>("startCamera", videoElement, deviceId);
+        if (caps != null)
+        {
+            zoomSupported = caps.ZoomSupported;
+            minZoom = caps.MinZoom;
+            maxZoom = caps.MaxZoom;
+            stepZoom = caps.StepZoom;
+            currentZoom = minZoom;
+        }
+    }
+
+    private async Task ToggleTorch()
+    {
+        if (cameraModule != null)
+        {
+            isTorchOn = !isTorchOn;
+            await cameraModule.InvokeAsync<bool>("toggleTorch", isTorchOn);
+        }
+    }
+
+    private async Task OnZoomChanged(ChangeEventArgs e)
+    {
+        if (double.TryParse(e.Value?.ToString(), out double z))
+        {
+            currentZoom = z;
+            if (cameraModule != null) await cameraModule.InvokeVoidAsync("setZoom", currentZoom);
+        }
+    }
+
+    private async Task StopCameraMode()
+    {
+        await StopCamera(); isCameraActive = false; isTorchOn = false;
+    }
+    private async Task StopCamera() { if (cameraModule != null) await cameraModule.InvokeVoidAsync("stopCamera"); }
+    private async Task CapturePhoto() { if (cameraModule != null && dotNetHelper != null) { flashClass = "flash-effect flash-animation"; StateHasChanged(); await cameraModule.InvokeVoidAsync("takePicture", dotNetHelper, videoElement); await Task.Delay(300); flashClass = "flash-effect"; StateHasChanged(); } }
+    [JSInvokable] public async Task ReceivePhoto(string data) { photos.Insert(0, new SurveyPhoto { ImageDataUrl = data }); lastPhotoUrl = data; await InvokeAsync(StateHasChanged); await SaveData(); }
+
+    // --- 本機資料與定位 ---
+    private async Task DeletePhoto(SurveyPhoto p) { photos.Remove(p); if (p.ImageDataUrl == lastPhotoUrl) lastPhotoUrl = photos.Any() ? photos.First().ImageDataUrl : ""; await SaveData(); }
+    private async Task ClearLocalData() { if (dbModule != null) await dbModule.InvokeVoidAsync("clearSurveyData"); photos.Clear(); if (!isLockedMode) { selectedWorkOrderId = 0; surveyTitle = ""; surveyAddress = ""; surveyCustomerName = ""; } lastPhotoUrl = ""; await InvokeAsync(StateHasChanged); }
+    private async Task SaveData() { if (dbModule != null) { var draft = new SurveyDraftData { WorkOrderId = selectedWorkOrderId, Title = surveyTitle, Address = surveyAddress, CustomerName = surveyCustomerName, Photos = photos }; await dbModule.InvokeVoidAsync("saveSurveyData", draft); } }
+    private async Task LoadData() { if (dbModule != null) { var data = await dbModule.InvokeAsync<SurveyDraftData>("loadSurveyData"); if (data != null && (data.WorkOrderId != 0 || (data.Photos != null && data.Photos.Any()))) { if (!isLockedMode) { selectedWorkOrderId = data.WorkOrderId; surveyTitle = data.Title ?? ""; surveyAddress = data.Address ?? ""; surveyCustomerName = data.CustomerName ?? ""; photos = data.Photos ?? new List<SurveyPhoto>(); if (selectedWorkOrderId != 0 && !workOrders.Any(w => w.Id == selectedWorkOrderId)) workOrders.Add(new SurveyWorkOrderDto { Id = selectedWorkOrderId, Title = surveyTitle, Address = surveyAddress, CustomerName = surveyCustomerName }); if (photos.Any()) lastPhotoUrl = photos.First().ImageDataUrl; } } await InvokeAsync(StateHasChanged); } }
+    private async void OnLocationChanged(object? sender, LocationChangedEventArgs e) { await InvokeAsync(async () => { if (!isLockedMode) { workOrders.Clear(); surveyTitle = ""; surveyAddress = ""; await LoadWorkOrders(); } StateHasChanged(); }); }
+    private async Task GetLocation() { if (cameraModule == null) return; try { currentLocation = await cameraModule.InvokeAsync<LocationData>("getCurrentLocation"); if (currentLocation != null) { await ResolveAddress(currentLocation); await InvokeAsync(StateHasChanged); } } catch (Exception ex) { Logger.LogError(ex, "定位失敗"); } }
+
+    // --- ★★★ 修正後的地址定位邏輯 (無門牌時自動補座標) ★★★ ---
+    private async Task ResolveAddress(LocationData loc)
+    {
+        // 1. 地址鎖定 (如果已經有手動輸入或之前定位過且有拍照，就不覆蓋，除非清空)
+        if (photos.Any() && !string.IsNullOrWhiteSpace(surveyAddress))
+        {
+            return;
+        }
+
+        try
+        {
+            string url = $"https://nominatim.openstreetmap.org/reverse?format=json&lat={loc.Latitude}&lon={loc.Longitude}&zoom=18&addressdetails=1";
+            var request = new HttpRequestMessage(HttpMethod.Get, url);
+            request.Headers.Add("User-Agent", "WorkOrderSystem/1.0");
+            var response = await Http.SendAsync(request);
+
+            if (response.IsSuccessStatusCode)
+            {
+                var addressData = await response.Content.ReadFromJsonAsync<NominatimResponse>();
+                if (addressData?.address != null)
+                {
+                    var addr = addressData.address;
+                    string cityStr = addr.city ?? addr.county ?? "";
+
+                    // 行政區判斷
+                    string[] districtCandidates = { addr.district, addr.town, addr.city_district, addr.suburb };
+                    // 優先找結尾是 "區"、"鄉"、"鎮" 的字串
+                    string districtStr = districtCandidates.FirstOrDefault(s => !string.IsNullOrEmpty(s) && (s.EndsWith("區") || s.EndsWith("鄉") || s.EndsWith("鎮")))
+                                         // 如果都沒有，就退而求其次拿第一個非空的
+                                         ?? districtCandidates.FirstOrDefault(s => !string.IsNullOrEmpty(s))
+                                         ?? "";
+
+                    string roadStr = addr.road ?? "";
+                    string numberStr = "";
+
+                    // 判斷是否有門牌
+                    bool hasNumber = !string.IsNullOrEmpty(addr.house_number);
+
+                    if (hasNumber)
+                    {
+                        string rawNum = addr.house_number.Trim();
+                        numberStr = rawNum.EndsWith("號") ? rawNum : $"{rawNum}號";
+                    }
+
+                    // 組裝：市 + 區 + 路 + 號
+                    string fullAddress = $"{cityStr}{districtStr}{roadStr}{numberStr}";
+
+                    // ★ [新增功能] 如果沒有門牌號碼，強制補上座標方便導航
+                    if (!hasNumber)
+                    {
+                        // 取小數點後 6 位，精確度約 0.1 公尺
+                        fullAddress += $" (📍座標: {loc.Latitude:F6}, {loc.Longitude:F6})";
+                    }
+
+                    // 最終檢查：如果組出來的地址太短 (例如定位失敗只抓到市)，改用 API 提供的完整顯示名稱，並也補上座標
+                    if (string.IsNullOrWhiteSpace(fullAddress) || fullAddress.Length < 5)
+                    {
+                        string fallback = addressData.display_name ?? "";
+                        // 確保 fallback 也有座標
+                        surveyAddress = fallback + $" (📍座標: {loc.Latitude:F6}, {loc.Longitude:F6})";
+                    }
+                    else
+                    {
+                        surveyAddress = fullAddress;
+                    }
+
+                    await SaveData();
+                }
+            }
+        }
+        catch { }
+    }
+
+    public void Dispose() { NavManager.LocationChanged -= OnLocationChanged; }
+    public async ValueTask DisposeAsync() { await StopCamera(); if (cameraModule != null) await cameraModule.DisposeAsync(); if (dbModule != null) await dbModule.DisposeAsync(); if (dotNetHelper != null) dotNetHelper.Dispose(); }
+    public class LocationData { public double Latitude { get; set; } public double Longitude { get; set; } }
+    public class NominatimResponse { public string display_name { get; set; } public AddressDetail address { get; set; } }
+
+    public class AddressDetail
+    {
+        public string city { get; set; }
+        public string county { get; set; }
+        public string district { get; set; }
+        public string town { get; set; }
+        public string road { get; set; }
+        public string house_number { get; set; }
+        public string city_district { get; set; }
+        public string suburb { get; set; }
+        public string village { get; set; }
+        public string neighbourhood { get; set; }
+    }
+}

@@ -1,0 +1,99 @@
+﻿@inject IJSRuntime JSRuntime
+
+@* 這裡不需要再引用 AuthenticationStateProvider 了，因為我們不再依賴它來顯示選單 *@
+
+<div class="top-row ps-3 navbar navbar-dark">
+    <div class="container-fluid">
+        <a class="navbar-brand" href="">
+            <i class="bi bi-tools me-2"></i>派工系統
+        </a>
+    </div>
+</div>
+
+<input type="checkbox" id="mobile-menu-toggle" class="mobile-menu-checkbox" />
+<label for="mobile-menu-toggle" class="nav-backdrop"></label>
+
+<div class="nav-scrollable" onclick="document.getElementById('mobile-menu-toggle').checked = false;">
+    <nav class="flex-column">
+
+        <div class="nav-item px-3">
+            <NavLink class="nav-link" href="" Match="NavLinkMatch.All">
+                <i class="bi bi-speedometer2 me-2"></i> 儀表板首頁
+            </NavLink>
+        </div>
+
+        @* 🔥 修改重點：移除了 <AuthorizeView>，直接顯示選單 *@
+
+        <div class="sidebar-heading mt-3 mb-1 px-3 text-white-50 small">現場作業</div>
+
+        <div class="nav-item px-3">
+            <NavLink class="nav-link" href="/mytasks">
+                <i class="bi bi-list-check me-2"></i> 我的任務
+            </NavLink>
+        </div>
+        <div class="nav-item px-3">
+            <NavLink class="nav-link" href="site-survey">
+                <i class="bi bi-camera-fill me-2"></i> 現場拍照/暫存
+            </NavLink>
+        </div>
+        <div class="nav-item px-3">
+            <NavLink class="nav-link" href="/drafts/manage">
+                <i class="bi bi-archive-fill me-2"></i> 暫存管理
+            </NavLink>
+        </div>
+        <div class="nav-item px-3">
+            <NavLink class="nav-link" href="/workorders/create">
+                <i class="bi bi-plus-circle-fill me-2"></i> 新增派工
+            </NavLink>
+        </div>
+
+        <div class="sidebar-heading mt-3 mb-1 px-3 text-white-50 small">資料查詢</div>
+
+        <div class="nav-item px-3">
+            <NavLink class="nav-link" href="/manager/dashboard">
+                <i class="bi bi-table me-2"></i> 工單總覽
+            </NavLink>
+        </div>
+        <div class="nav-item px-3">
+            <NavLink class="nav-link" href="/albums">
+                <i class="bi bi-images me-2"></i> 相簿牆
+            </NavLink>
+        </div>
+        <div class="nav-item px-3">
+            <NavLink class="nav-link" href="/myrequests">
+                <i class="bi bi-person-lines-fill me-2"></i> 我的申請
+            </NavLink>
+        </div>
+        <div class="nav-item px-3">
+            <NavLink class="nav-link" href="/history">
+                <i class="bi bi-clock-history me-2"></i> 歷史紀錄
+            </NavLink>
+        </div>
+
+        <div class="sidebar-heading mt-3 mb-1 px-3 text-white-50 small">管理中心</div>
+
+        <div class="nav-item px-3">
+            <NavLink class="nav-link" href="/supervisor/dashboard">
+                <i class="bi bi-shield-check me-2"></i> 主管審核
+            </NavLink>
+        </div>
+        <div class="nav-item px-3">
+            <NavLink class="nav-link" href="/reports/engineer">
+                <i class="bi bi-bar-chart-line-fill me-2"></i> 月報表
+            </NavLink>
+        </div>
+        <div class="nav-item px-3">
+            <NavLink class="nav-link" href="/admin/users">
+                <i class="bi bi-gear-fill me-2"></i> 使用者管理
+            </NavLink>
+        </div>
+
+        @* 還是保留一個登入連結在最下方，以防萬一 *@
+        <div class="nav-item px-3 mt-4 border-top border-secondary pt-2">
+            <NavLink class="nav-link" href="/Account/Login">
+                <i class="bi bi-box-arrow-in-right me-2"></i> 前往登入頁
+            </NavLink>
+        </div>
+
+    </nav>
+</div>

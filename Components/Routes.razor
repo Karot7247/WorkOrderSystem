@@ -1,0 +1,17 @@
+﻿@using WorkOrderSystem.Components.Account.Shared
+<Router AppAssembly="typeof(Program).Assembly">
+    <Found Context="routeData">
+        <AuthorizeRouteView RouteData="routeData" DefaultLayout="typeof(Layout.MainLayout)">
+            <NotAuthorized>
+                <RedirectToLogin />
+            </NotAuthorized>
+        </AuthorizeRouteView>
+        <FocusOnNavigate RouteData="routeData" Selector="h1" />
+    </Found>
+    <NotFound>
+        <PageTitle>Not Found</PageTitle>
+        <LayoutView Layout="typeof(Layout.MainLayout)">
+            <p role="alert">抱歉，這個網址沒有對應的頁面。</p>
+        </LayoutView>
+    </NotFound>
+</Router>

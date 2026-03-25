@@ -1,0 +1,205 @@
+﻿@* Components/Shared/PdfPreviewModal.razor *@
+@* ✨ 核心修改：使用 PDF.js 和 Canvas，不再使用 iframe ✨ *@
+
+@inject IJSRuntime JSRuntime
+
+@if (IsVisible)
+{
+    <div class="modal fade show" tabindex="-1" style="display: block;" aria-modal="true" role="dialog">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">預覽報價單: @FileName</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close" @onclick="CloseModal"></button>
+                </div>
+                @* PDF 分頁控制 *@
+                @if (totalPages > 0)
+                {
+                    <div class="pdf-controls sticky-top bg-dark text-white p-2 d-flex justify-content-center align-items-center">
+                        <button class="btn btn-secondary btn-sm" @onclick="RenderPreviousPage" disabled="@(currentPage <= 1 || isRendering)">
+                            <i class="bi bi-chevron-left"></i> 上一頁
+                        </button>
+                        <span class="mx-3">
+                            第 @currentPage 頁 / 共 @totalPages 頁
+                        </span>
+                        <button class="btn btn-secondary btn-sm" @onclick="RenderNextPage" disabled="@(currentPage >= totalPages || isRendering)">
+                            下一頁 <i class="bi bi-chevron-right"></i>
+                        </button>
+                    </div>
+                }
+                <div class="modal-body" style="height: 80vh; overflow-y: auto; background-color: #525659;">
+                    @* 給 PDF 渲染區一個深色背景 *@
+
+                    
+
+                    @if (isRendering)
+                    {
+                        <div class="text-center text-white p-5">
+                            <div class="spinner-border" role="status">
+                                <span class="visually-hidden">Loading PDF...</span>
+                            </div>
+                            <p class="mt-2">正在渲染 PDF 頁面...</p>
+                        </div>
+                    }
+
+                    @if (!string.IsNullOrEmpty(errorMessage))
+                    {
+                        <div class="alert alert-danger m-3">@errorMessage</div>
+                    }
+
+                    @* ✨ 核心：使用 Canvas 元素來繪製 PDF ✨ *@
+
+                    @* ✨ 修正：移除 d-flex 容器，改用單一 div
+                1. text-align: center; 會在 canvas 較窄時使其置中
+                2. overflow-x: auto; 會在 canvas 較寬時使其可捲動
+                3. padding: 1.5rem; 讓 canvas 周圍有呼吸空間
+                *@
+                    <div class="pdf-canvas-container" style="text-align: center; overflow-x: auto; -webkit-overflow-scrolling: touch; padding: 1.5rem;">
+                        <canvas id="@canvasId" style="display: inline-block;"></canvas> @* 確保 canvas 是 inline-block 才能被 text-align 置中 *@
+                    </div>
+
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" @onclick="CloseModal">關閉</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="modal-backdrop fade show"></div>
+}
+
+@code {
+    [Parameter] public bool IsVisible { get; set; }
+    [Parameter] public string? Base64Data { get; set; } // ✨ 修改：接收 Base64 資料，而不是 URL
+    [Parameter] public string? FileName { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private IJSObjectReference? pdfViewerModule;
+    private string canvasId = $"pdf-canvas-{Guid.NewGuid()}"; // 確保 Canvas ID 唯一
+
+    private int currentPage = 1;
+    private int totalPages = 0;
+    private bool isRendering = false;
+    private string? errorMessage = null;
+
+    protected override async Task OnInitializedAsync()
+    {
+        // 載入 JS 模組
+        try
+        {
+            pdfViewerModule = await JSRuntime.InvokeAsync<IJSObjectReference>("import", "./js/pdfViewer.js");
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"無法載入 PDF 檢視器元件: {ex.Message}";
+            Console.Error.WriteLine(errorMessage);
+        }
+    }
+
+    // 當 Modal 變為可見時，觸發 PDF 載入
+    protected override async Task OnParametersSetAsync()
+    {
+        if (IsVisible && !string.IsNullOrEmpty(Base64Data) && pdfViewerModule != null && totalPages == 0) // 只在第一次顯示時載入
+        {
+            await LoadPdfAsync();
+        }
+    }
+
+    private async Task LoadPdfAsync()
+    {
+        if (pdfViewerModule == null || string.IsNullOrEmpty(Base64Data)) return;
+
+        isRendering = true;
+        errorMessage = null;
+        StateHasChanged();
+
+        try
+        {
+            // 呼叫 JS 函式 (pdfViewer.js) 載入 Base64 資料
+            var pdfInfo = await pdfViewerModule.InvokeAsync<PdfInfo>("loadPdf", Base64Data, canvasId);
+            totalPages = pdfInfo.totalPages;
+            currentPage = 1;
+
+            // 載入後，渲染第一頁
+            await RenderPageAsync(currentPage);
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"載入 PDF 失敗: {ex.Message}";
+            _logger.LogError(ex, "PdfPreviewModal: LoadPdfAsync 失敗"); // 假設有注入 ILogger (或用 Console)
+        }
+        finally
+        {
+            isRendering = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task RenderPageAsync(int pageNum)
+    {
+        if (pdfViewerModule == null || isRendering) return;
+
+        isRendering = true;
+        errorMessage = null;
+        StateHasChanged();
+
+        try
+        {
+            // 呼叫 JS 函式 (pdfViewer.js) 渲染指定頁面
+            await pdfViewerModule.InvokeVoidAsync("renderPage", pageNum);
+            currentPage = pageNum;
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"渲染第 {pageNum} 頁失敗: {ex.Message}";
+            _logger.LogError(ex, "PdfPreviewModal: RenderPageAsync 失敗");
+        }
+        finally
+        {
+            isRendering = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task RenderPreviousPage()
+    {
+        if (currentPage > 1)
+        {
+            await RenderPageAsync(currentPage - 1);
+        }
+    }
+
+    private async Task RenderNextPage()
+    {
+        if (currentPage < totalPages)
+        {
+            await RenderPageAsync(currentPage + 1);
+        }
+    }
+
+
+    private async Task CloseModal()
+    {
+        // 清理 JS 中的 PDF 文件物件
+        if (pdfViewerModule != null)
+        {
+            await pdfViewerModule.InvokeVoidAsync("cleanup");
+        }
+
+        // 重設狀態
+        totalPages = 0;
+        currentPage = 1;
+        errorMessage = null;
+
+        await OnClose.InvokeAsync();
+    }
+
+    // 輔助類別，用於接收 JS 回傳的 PDF 資訊
+    private class PdfInfo
+    {
+        public int totalPages { get; set; }
+    }
+
+    // ✨ 核心修改：加入 ILogger (如果需要的話) ✨
+    [Inject] private ILogger<PdfPreviewModal> _logger { get; set; }
+}

@@ -1,0 +1,78 @@
+﻿@page "/admin/users"
+@rendermode InteractiveServer
+
+@using Microsoft.AspNetCore.Authorization
+@using Microsoft.EntityFrameworkCore
+@using WorkOrderSystem.Data
+@using Microsoft.AspNetCore.Identity
+
+@attribute [Authorize(Roles = "Manager")]
+
+@inject IServiceScopeFactory ScopeFactory
+
+<PageTitle>使用者管理</PageTitle>
+
+<h3>使用者管理</h3>
+<p>
+    <a href="/admin/user/add" class="btn btn-success">新增使用者</a>
+</p>
+
+@if (users == null)
+{
+    <p><em>正在載入使用者列表...</em></p>
+}
+else
+{
+    <table class="table table-striped">
+        <thead class="table-dark">
+            <tr>
+                <th>姓名</th>
+                <th>使用者帳號</th>
+                <th>Email</th>
+                <th>角色</th>
+                <th>操作</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var user in users)
+            {
+                <tr>
+                    <td>@user.FullName</td>
+                    <td>@user.UserName</td>
+                    <td>@user.Email</td>
+                    <td>
+                        @if (user.IsManager)
+                        {
+                            <span class="badge bg-danger">管理者</span>
+                        }
+                        @if (user.IsSupervisor)
+                        {
+                            <span class="badge bg-warning text-dark">主管</span>
+                        }
+                        @if (user.IsEngineer)
+                        {
+                            <span class="badge bg-info text-dark">工程師</span>
+                        }
+                    </td>
+                    <td>
+                        <a href="@($"/admin/user/edit/{user.Id}")" class="btn btn-primary btn-sm">編輯</a>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+
+@code {
+    private List<AppUser>? users;
+
+    protected override async Task OnInitializedAsync()
+    {
+        using (var scope = ScopeFactory.CreateScope())
+        {
+            var userManager = scope.ServiceProvider.GetRequiredService<UserManager<AppUser>>();
+            users = await userManager.Users.OrderBy(u => u.UserName).ToListAsync();
+        }
+    }
+}

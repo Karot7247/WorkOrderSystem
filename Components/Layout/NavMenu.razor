@@ -1,0 +1,195 @@
+﻿@using System.Security.Claims
+@using WorkOrderSystem.Data
+@using Microsoft.AspNetCore.Identity
+@using Microsoft.AspNetCore.Authorization
+@inject AuthenticationStateProvider AuthenticationStateProvider
+@inject IServiceScopeFactory ScopeFactory
+@inject IJSRuntime JSRuntime
+@implements IDisposable
+
+<div class="top-row ps-3 navbar navbar-dark">
+    <div class="container-fluid">
+        <a class="navbar-brand" href="">
+            <i class="bi bi-tools me-2"></i>派工系統
+        </a>
+    </div>
+</div>
+
+@* 🔥 1. 核心控制元件：隱藏的 Checkbox，給它一個全域 ID *@
+<input type="checkbox" id="mobile-menu-toggle" class="mobile-menu-checkbox" />
+
+@* 🔥 2. 遮罩層：當選單打開時，點擊空白處 (Label) 可以關閉 Checkbox *@
+<label for="mobile-menu-toggle" class="nav-backdrop"></label>
+
+@* 🔥 3. 選單容器：加入簡單的 JS onclick 確保點擊連結後選單會縮回去 *@
+<div class="nav-scrollable" onclick="document.getElementById('mobile-menu-toggle').checked = false;">
+    <nav class="flex-column">
+
+        @* --- 內容保持不變，複製您原本的連結內容 --- *@
+        <div class="nav-item px-3">
+            <NavLink class="nav-link" href="" Match="NavLinkMatch.All">
+                <i class="bi bi-speedometer2 me-2"></i> 儀表板首頁
+            </NavLink>
+        </div>
+
+        <AuthorizeView>
+            <Authorized>
+                <div class="sidebar-heading mt-3 mb-1 px-3 text-white-50 small">現場作業</div>
+
+                @if (isEngineer)
+                {
+                    <div class="nav-item px-3">
+                        <NavLink class="nav-link" href="/mytasks">
+                            <i class="bi bi-list-check me-2"></i> 我的任務
+                        </NavLink>
+                    </div>
+                    <div class="nav-item px-3">
+                        <NavLink class="nav-link" href="site-survey">
+                            <i class="bi bi-camera-fill me-2"></i> 現場拍照/暫存
+                        </NavLink>
+                    </div>
+                    <div class="nav-item px-3">
+                        <NavLink class="nav-link" href="/drafts/manage">
+                            <i class="bi bi-archive-fill me-2"></i> 暫存管理
+                        </NavLink>
+                    </div>
+                }
+
+                <div class="nav-item px-3">
+                    <NavLink class="nav-link" href="/workorders/create">
+                        <i class="bi bi-plus-circle-fill me-2"></i> 新增派工
+                    </NavLink>
+                </div>
+
+                <div class="sidebar-heading mt-3 mb-1 px-3 text-white-50 small">資料查詢</div>
+
+                <div class="nav-item px-3">
+                    <NavLink class="nav-link" href="/manager/dashboard">
+                        <i class="bi bi-table me-2"></i> 工單總覽
+                    </NavLink>
+                </div>
+                <div class="nav-item px-3">
+                    <NavLink class="nav-link" href="/albums">
+                        <i class="bi bi-images me-2"></i> 相簿牆
+                    </NavLink>
+                </div>
+                <div class="nav-item px-3">
+                    <NavLink class="nav-link" href="/myrequests">
+                        <i class="bi bi-person-lines-fill me-2"></i> 我的申請
+                    </NavLink>
+                </div>
+                <div class="nav-item px-3">
+                    <NavLink class="nav-link" href="/history">
+                        <i class="bi bi-clock-history me-2"></i> 歷史紀錄
+                    </NavLink>
+                </div>
+
+                @if (isManager || isSupervisor)
+                {
+                    <div class="sidebar-heading mt-3 mb-1 px-3 text-white-50 small">管理中心</div>
+                    @if (isSupervisor)
+                    {
+                        <div class="nav-item px-3">
+                            <NavLink class="nav-link" href="/supervisor/dashboard">
+                                <i class="bi bi-shield-check me-2"></i> 主管審核
+                            </NavLink>
+                        </div>
+                    }
+                    <div class="nav-item px-3">
+                        <NavLink class="nav-link" href="/reports/engineer">
+                            <i class="bi bi-bar-chart-line-fill me-2"></i> 月報表
+                        </NavLink>
+                    </div>
+                    @if (isManager)
+                    {
+                        <div class="nav-item px-3">
+                            <NavLink class="nav-link" href="/admin/users">
+                                <i class="bi bi-gear-fill me-2"></i> 使用者管理
+                            </NavLink>
+                        </div>
+                    }
+                }
+            </Authorized>
+            <NotAuthorized>
+                <div class="nav-item px-3">
+                    <NavLink class="nav-link" href="/Account/Login">
+                        <i class="bi bi-box-arrow-in-right me-2"></i> 登入
+                    </NavLink>
+                </div>
+            </NotAuthorized>
+        </AuthorizeView>
+    </nav>
+</div>
+
+@code {
+    // 🔥 不需要任何 Toggle 方法了，全部交給 HTML/CSS
+    [CascadingParameter]
+    public bool IsMobile { get; set; } = false;
+
+    private bool isManager = false;
+    private bool isEngineer = false;
+    private bool isSupervisor = false;
+    private bool _disposed = false;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            AuthenticationStateProvider.AuthenticationStateChanged += HandleAuthenticationStateChanged;
+            var authState = await AuthenticationStateProvider.GetAuthenticationStateAsync();
+            await UpdateUserFlagsAsync(authState.User);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error: {ex.Message}");
+        }
+    }
+
+    private async void HandleAuthenticationStateChanged(Task<AuthenticationState> authStateTask)
+    {
+        try
+        {
+            var authState = await authStateTask;
+            await UpdateUserFlagsAsync(authState.User);
+
+            if (_disposed) return;
+            await InvokeAsync(StateHasChanged);
+        }
+        catch { }
+    }
+
+    private async Task UpdateUserFlagsAsync(ClaimsPrincipal user)
+    {
+        try
+        {
+            isManager = false;
+            isEngineer = false;
+            isSupervisor = false;
+
+            if (user.Identity is { IsAuthenticated: true })
+            {
+                using (var scope = ScopeFactory.CreateScope())
+                {
+                    var userManager = scope.ServiceProvider.GetRequiredService<UserManager<AppUser>>();
+                    var appUser = await userManager.GetUserAsync(user);
+                    if (appUser != null)
+                    {
+                        isManager = appUser.IsManager;
+                        isEngineer = appUser.IsEngineer;
+                        isSupervisor = appUser.IsSupervisor;
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Auth Error: {ex.Message}");
+        }
+    }
+
+    public void Dispose()
+    {
+        _disposed = true;
+        AuthenticationStateProvider.AuthenticationStateChanged -= HandleAuthenticationStateChanged;
+    }
+}

@@ -1,0 +1,96 @@
+﻿@inherits LayoutComponentBase
+@inject NavigationManager NavManager
+@inject AuthenticationStateProvider AuthStateProvider
+@inject IJSRuntime JSRuntime
+
+<div class="page">
+    @* --- 電腦版側邊欄 (手機版透過 CSS 隱藏) --- *@
+    <div class="sidebar">
+        @* 不需要 ref 了 *@
+        <NavMenu />
+    </div>
+
+    <main>
+        @* --- 頂部狀態列 (電腦版) --- *@
+        <div class="top-row px-4">
+            <LoginDisplay />
+            <a href="https://docs.microsoft.com/aspnet/" target="_blank">About</a>
+        </div>
+
+        @* --- 內容區域 --- *@
+        <article class="content px-4">
+            @Body
+        </article>
+    </main>
+</div>
+
+@* --- 手機版底部導航列 --- *@
+<div class="bottom-nav">
+
+    @* 1. 任務 / 首頁 *@
+    <a href="@(IsEngineer ? "mytasks" : "")" class="nav-item-mobile @GetActiveClass(IsEngineer ? "mytasks" : "")">
+        <i class="bi @(IsEngineer ? "bi-list-check" : "bi-house-door")"></i>
+        <span>@(IsEngineer ? "任務" : "首頁")</span>
+    </a>
+
+    @* 2. 列表 *@
+    <a href="manager/dashboard" class="nav-item-mobile @GetActiveClass("manager/dashboard")">
+        <i class="bi bi-card-list"></i>
+        <span>列表</span>
+    </a>
+
+    @* 3. 拍照回報 (核心功能 - 凸起設計) *@
+    <a href="site-survey" class="nav-item-mobile highlight">
+        <div class="circle">
+            <i class="bi bi-camera-fill"></i>
+        </div>
+        <span style="margin-top: 4px;">拍照</span>
+    </a>
+
+    @* 4. 相簿 *@
+    <a href="albums" class="nav-item-mobile @GetActiveClass("albums")">
+        <i class="bi bi-images"></i>
+        <span>相簿</span>
+    </a>
+
+    @* 5. 更多/漢堡選單 (✨ 改用 Label 直接控制 Checkbox，不需要 onclick ✨) *@
+    @* 注意：這裡的 for 對應 NavMenu 裡的 id="mobile-menu-toggle" *@
+    <label for="mobile-menu-toggle" class="nav-item-mobile" style="cursor: pointer;">
+        <i class="bi bi-list"></i>
+        <span>更多</span>
+    </label>
+</div>
+
+@code {
+    private bool IsEngineer = false;
+    // 移除不再需要的 NavMenuComponent 引用
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var state = await AuthStateProvider.GetAuthenticationStateAsync();
+            var user = state.User;
+            if (user.Identity != null && user.Identity.IsAuthenticated)
+            {
+                IsEngineer = true;
+            }
+        }
+        catch { }
+    }
+
+    // 移除 ToggleSidebar 方法，因為已經改用 HTML/CSS 控制
+
+    private string GetActiveClass(string page)
+    {
+        var uri = NavManager.ToAbsoluteUri(NavManager.Uri).ToString();
+        if (string.IsNullOrEmpty(page)) return uri.EndsWith("/") ? "active" : "";
+        return uri.Contains(page, StringComparison.OrdinalIgnoreCase) ? "active" : "";
+    }
+}
+
+<div id="blazor-error-ui">
+    An unhandled error has occurred.
+    <a href="" class="reload">Reload</a>
+    <a class="dismiss">🗙</a>
+</div>

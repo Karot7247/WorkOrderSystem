@@ -1,0 +1,53 @@
+﻿.gallery-viewer {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    background: #222;
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.toolbar {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 0.5rem;
+    background: #333;
+    padding: 0.5rem;
+    border-bottom: 1px solid #444;
+}
+
+    .toolbar .btn {
+        background: #444;
+        color: white;
+        border: none;
+        border-radius: 6px;
+        padding: 0.4rem 0.6rem;
+        font-size: 1.1rem;
+        transition: background 0.2s;
+    }
+
+        .toolbar .btn:hover {
+            background: #666;
+        }
+
+    .toolbar .color-picker {
+        width: 32px;
+        height: 32px;
+        border: none;
+        background: none;
+    }
+
+.gallery-content {
+    flex: 1;
+    position: relative;
+    overflow: hidden;
+}
+
+    .gallery-content canvas {
+        width: 100%;
+        height: 100%;
+        touch-action: none;
+        user-select: none;
+        background-color: #111;
+    }

@@ -1,0 +1,119 @@
+﻿@page "/public/view/{AccessToken:guid}"
+@rendermode InteractiveServer
+@using WorkOrderSystem.Data
+@using WorkOrderSystem.Models
+@using Microsoft.EntityFrameworkCore
+@using QRCoder
+@inject IServiceScopeFactory ScopeFactory
+@inject NavigationManager NavigationManager
+
+<PageTitle>工單資料下載</PageTitle>
+
+<div class="container mt-5">
+    @if (workOrder == null)
+    {
+        <div class="alert alert-danger">
+            找不到工單資料，或連結已失效。
+        </div>
+    }
+    else
+    {
+        <div class="card">
+            <div class="card-header">
+                <div class="row align-items-center">
+                    <div class="col">
+                        <h3 class="mb-0">工單資料下載</h3>
+                    </div>
+                    <div class="col-auto">
+                        @if (!string.IsNullOrEmpty(qrCodeAsBase64))
+                        {
+                            <div class="text-center">
+                                <img src="@qrCodeAsBase64" style="width: 100px; height: 100px;" alt="QR Code" />
+                                <p class="small text-muted mb-0">讓客戶掃描此碼</p>
+                            </div>
+                        }
+                    </div>
+                </div>
+            </div>
+            <div class="card-body">
+                <h5 class="card-title">@workOrder.Title</h5>
+                <p class="card-text">客戶: @workOrder.CustomerName</p>
+                <hr />
+
+                <h5><i class="bi bi-file-earmark-pdf-fill text-danger"></i> PDF 確認單</h5>
+                <p>
+                    @if (!string.IsNullOrEmpty(workOrder.GeneratedPdfPath))
+                    {
+                        <a href="@workOrder.GeneratedPdfPath" class="btn btn-danger" download>
+                            <i class="bi bi-download"></i> 下載 PDF 確認單
+                        </a>
+                    }
+                    else
+                    {
+                        <a href="#" class="btn btn-danger disabled">尚無可用 PDF</a>
+                    }
+                </p>
+
+                @if (workOrder.Photos.Any())
+                {
+                    <h5 class="mt-4"><i class="bi bi-images text-primary"></i> 附件照片 (@workOrder.Photos.Count)</h5>
+                    <div class="list-group">
+                        @foreach (var photo in workOrder.Photos)
+                        {
+                            <a href="@photo.FilePath" download="@GenerateFriendlyPhotoName(photo)" class="list-group-item list-group-item-action">
+                                @GenerateFriendlyPhotoName(photo)
+                            </a>
+                        }
+                    </div>
+                }
+            </div>
+        </div>
+    }
+</div>
+
+
+@code {
+    [Parameter]
+    public Guid AccessToken { get; set; }
+
+    private WorkOrder? workOrder;
+    private string? qrCodeAsBase64; // 新增：儲存 QR Code 圖片資料
+
+    protected override async Task OnInitializedAsync()
+    {
+        using var scope = ScopeFactory.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
+        workOrder = await context.WorkOrders
+            .Include(wo => wo.Photos)
+            .FirstOrDefaultAsync(wo => wo.PublicAccessToken == AccessToken);
+
+        // 如果成功找到工單，就產生 QR Code
+        if (workOrder != null)
+        {
+            GenerateQrCode();
+        }
+    }
+
+    // 新增：產生 QR Code 的方法
+    private void GenerateQrCode()
+    {
+        // 直接取得當前頁面的完整網址
+        var currentUrl = NavigationManager.Uri;
+
+        using var qrGenerator = new QRCodeGenerator();
+        using var qrCodeData = qrGenerator.CreateQrCode(currentUrl, QRCodeGenerator.ECCLevel.Q);
+        using var qrCode = new PngByteQRCode(qrCodeData);
+        var qrCodeBytes = qrCode.GetGraphic(20);
+        qrCodeAsBase64 = $"data:image/png;base64,{Convert.ToBase64String(qrCodeBytes)}";
+    }
+
+    private string GenerateFriendlyPhotoName(WorkOrderPhoto photo)
+    {
+        var customer = workOrder?.CustomerName ?? "Photo";
+        var title = workOrder?.Title ?? "WorkOrder";
+        // 確保檔名不會過長
+        var shortTitle = title.Length > 10 ? title.Substring(0, 10) : title;
+        return $"{customer}-{shortTitle}-{photo.Category}-{photo.Id}.jpg";
+    }
+}

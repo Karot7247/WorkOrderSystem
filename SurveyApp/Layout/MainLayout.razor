@@ -1,0 +1,72 @@
+﻿@inherits LayoutComponentBase
+@inject NavigationManager NavManager
+
+<div class="page">
+    <div class="sidebar">
+        <NavMenu />
+    </div>
+
+    <main>
+        <div class="top-row px-4 d-flex justify-content-end align-items-center">
+            <a href="/Account/Login" class="btn btn-sm btn-link text-dark text-decoration-none">
+                <i class="bi bi-person-circle"></i> 帳戶
+            </a>
+        </div>
+
+        <article class="content px-4">
+            @Body
+        </article>
+    </main>
+</div>
+
+@* 手機版底部導航列 *@
+<div class="bottom-nav">
+
+    @* 1. 任務 *@
+    <a href="mytasks" class="nav-item-mobile @GetActiveClass("mytasks")">
+        <i class="bi bi-list-check"></i>
+        <span>任務</span>
+    </a>
+
+    @* 2. 施工 (對應 construction-report) *@
+    <a href="construction-report" class="nav-item-mobile @GetActiveClass("construction-report")">
+        <i class="bi bi-tools"></i>
+        <span>施工</span>
+    </a>
+
+    @* 3. 拍照 (核心功能 - 凸起設計) *@
+    <a href="site-survey" class="nav-item-mobile highlight">
+        <div class="circle">
+            <i class="bi bi-camera-fill"></i>
+        </div>
+        <span style="margin-top: 4px;">拍照</span>
+    </a>
+
+    @* 4. 場勘 (連結到一般的 site-survey 頁面，或是暫存管理，這裡設定為 site-survey) *@
+    <a href="site-survey" class="nav-item-mobile @GetActiveClass("site-survey")">
+        <i class="bi bi-clipboard-check"></i>
+        <span>場勘</span>
+    </a>
+
+    @* 5. 更多 (漢堡選單) *@
+    <label for="mobile-menu-toggle" class="nav-item-mobile" style="cursor: pointer;">
+        <i class="bi bi-list"></i>
+        <span>更多</span>
+    </label>
+</div>
+
+@code {
+    // 移除 AuthenticationStateProvider 的依賴，直接依網址判斷狀態
+    private string GetActiveClass(string page)
+    {
+        var uri = NavManager.ToAbsoluteUri(NavManager.Uri).ToString();
+        if (string.IsNullOrEmpty(page)) return uri.EndsWith("/") ? "active" : "";
+        return uri.Contains(page, StringComparison.OrdinalIgnoreCase) ? "active" : "";
+    }
+}
+
+<div id="blazor-error-ui">
+    An unhandled error has occurred.
+    <a href="" class="reload">Reload</a>
+    <a class="dismiss">🗙</a>
+</div>

@@ -1,0 +1,277 @@
+﻿@page "/drafts/create"
+
+@* 1. 修正命名空間：指向 WorkOrderSystem *@
+@using WorkOrderSystem.Data
+@using WorkOrderSystem.Models
+
+
+@* 2. 補上 Hosting 以使用 IWebHostEnvironment *@
+@using Microsoft.AspNetCore.Hosting
+
+@* 3. 其他必要的引用 *@
+@using Microsoft.AspNetCore.Authorization
+@using Microsoft.AspNetCore.Identity
+@using Microsoft.EntityFrameworkCore
+@using System.IO
+@using System.ComponentModel.DataAnnotations
+
+@* 注入服務 *@
+@inject AuthenticationStateProvider _authenticationStateProvider
+@inject IServiceScopeFactory ScopeFactory
+@inject NavigationManager _navigationManager
+@inject IConfiguration Configuration
+@inject IWebHostEnvironment WebHostEnvironment
+@inject ILogger<CreateFieldDraft> _logger
+
+@attribute [Authorize]
+
+<PageTitle>建立現場暫存紀錄</PageTitle>
+
+<div class="container mt-4" style="max-width: 800px;">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <h3><i class="bi bi-camera-reels"></i> 建立現場暫存</h3>
+        <a href="/" class="btn btn-outline-secondary">返回首頁</a>
+    </div>
+
+    <div class="card shadow-sm">
+        <div class="card-body">
+            <EditForm Model="draftModel" OnValidSubmit="HandleSubmitAsync">
+                <DataAnnotationsValidator />
+                <ValidationSummary />
+
+                @* 1. 標題與基本資訊 *@
+                <div class="mb-3">
+                    <label class="form-label fw-bold">紀錄標題 (必填)</label>
+                    <InputText @bind-Value="draftModel.Title" class="form-control" placeholder="例如：台積電 F12 機台異音檢測" />
+                    <small class="text-muted">請輸入容易識別的名稱，方便稍後匯入工單。</small>
+                    <ValidationMessage For="@(() => draftModel.Title)" />
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label fw-bold">施工/場堪備註</label>
+                    <InputTextArea @bind-Value="draftModel.EngineerNotes" class="form-control" rows="5" placeholder="請填寫現場狀況..." />
+                </div>
+
+                @* 2. 照片上傳區 *@
+                <div class="mb-3">
+                    <label class="form-label fw-bold">現場照片</label>
+
+                    <div class="d-flex gap-2 mb-2">
+                        <InputFile OnChange="HandleFileSelected" capture="environment" class="d-none" id="cameraInput" accept="image/*" disabled="@isProcessing" />
+                        <InputFile OnChange="HandleFileSelected" multiple class="d-none" id="galleryInput" accept="image/jpeg, image/png, image/webp" disabled="@isProcessing" />
+
+                        <button type="button" class="btn btn-primary flex-grow-1" onclick="document.getElementById('cameraInput').click()" disabled="@isProcessing">
+                            <i class="bi bi-camera-fill"></i> 拍照
+                        </button>
+                        <button type="button" class="btn btn-outline-secondary flex-grow-1" onclick="document.getElementById('galleryInput').click()" disabled="@isProcessing">
+                            <i class="bi bi-images"></i> 相簿
+                        </button>
+                    </div>
+
+                    @if (isProcessing)
+                    {
+                        <div class="text-center my-2">
+                            <span class="spinner-border spinner-border-sm"></span> 處理照片中...
+                        </div>
+                    }
+
+                    @if (previewPhotos.Any())
+                    {
+                        <div class="row g-2 mt-2">
+                            @foreach (var photo in previewPhotos)
+                            {
+                                <div class="col-6 col-md-4">
+                                    <div class="border p-2 rounded position-relative">
+                                        <button type="button" class="btn btn-danger btn-sm position-absolute top-0 end-0 m-1" style="z-index:10;" @onclick="() => RemovePhoto(photo)">
+                                            <i class="bi bi-x-lg"></i>
+                                        </button>
+
+                                        <img src="@photo.Base64Data" class="img-fluid rounded mb-2" style="aspect-ratio: 4/3; object-fit: cover; width:100%;" />
+
+                                        <select class="form-select form-select-sm mb-1" @bind="photo.Category">
+                                            <option value="施工前">施工前</option>
+                                            <option value="施工中">施工中</option>
+                                            <option value="施工後">施工後</option>
+                                            <option value="自行備註">自行備註</option>
+                                        </select>
+
+                                        @if (photo.Category == "自行備註")
+                                        {
+                                            <input type="text" class="form-control form-control-sm" placeholder="備註..." @bind="photo.CustomNote" />
+                                        }
+                                    </div>
+                                </div>
+                            }
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="text-center text-muted border rounded p-3 bg-light">
+                            尚未加入照片
+                        </div>
+                    }
+                </div>
+
+                @* 3. 錯誤訊息與提交 *@
+                @if (!string.IsNullOrEmpty(errorMessage))
+                {
+                    <div class="alert alert-danger">@errorMessage</div>
+                }
+
+                <div class="d-grid gap-2 mt-4">
+                    <button type="submit" class="btn btn-success btn-lg" disabled="@isSaving">
+                        @if (isSaving)
+                        {
+                            <span class="spinner-border spinner-border-sm"></span> <span> 儲存中...</span>
+                        }
+                        else
+                        {
+                            <span><i class="bi bi-save"></i> 儲存暫存紀錄</span>
+                        }
+                    </button>
+                </div>
+            </EditForm>
+        </div>
+    </div>
+</div>
+
+@code {
+    // 資料模型
+    private FieldRecordDraft draftModel = new();
+    private List<PreviewPhoto> previewPhotos = new();
+
+    // 狀態控制
+    private bool isProcessing = false;
+    private bool isSaving = false;
+    private string? errorMessage;
+    private AppUser? currentUser;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var authState = await _authenticationStateProvider.GetAuthenticationStateAsync();
+        var user = authState.User;
+
+        if (user.Identity.IsAuthenticated)
+        {
+            using var scope = ScopeFactory.CreateScope();
+            var userManager = scope.ServiceProvider.GetRequiredService<UserManager<AppUser>>();
+            currentUser = await userManager.GetUserAsync(user);
+        }
+
+        if (currentUser == null)
+        {
+            errorMessage = "無法識別使用者，請重新登入。";
+        }
+    }
+
+    private async Task HandleFileSelected(InputFileChangeEventArgs e)
+    {
+        isProcessing = true;
+        errorMessage = null;
+        StateHasChanged();
+
+        try
+        {
+            var files = e.GetMultipleFiles(10);
+            foreach (var file in files)
+            {
+                if (!file.ContentType.StartsWith("image/")) continue;
+
+                var resized = await file.RequestImageFileAsync("image/jpeg", 1280, 1280);
+                using var stream = resized.OpenReadStream(10 * 1024 * 1024);
+                using var ms = new MemoryStream();
+                await stream.CopyToAsync(ms);
+
+                var base64 = $"data:image/jpeg;base64,{Convert.ToBase64String(ms.ToArray())}";
+
+                previewPhotos.Add(new PreviewPhoto
+                    {
+                        FileName = file.Name,
+                        Base64Data = base64,
+                        Category = "施工前"
+                    });
+            }
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"照片處理失敗: {ex.Message}";
+            _logger.LogError(ex, "Photo processing error");
+        }
+        finally
+        {
+            isProcessing = false;
+            StateHasChanged();
+        }
+    }
+
+    private void RemovePhoto(PreviewPhoto photo)
+    {
+        previewPhotos.Remove(photo);
+    }
+
+    private async Task HandleSubmitAsync()
+    {
+        if (currentUser == null) return;
+
+        isSaving = true;
+        errorMessage = null;
+        StateHasChanged();
+
+        try
+        {
+            using var scope = ScopeFactory.CreateScope();
+            var context = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
+            draftModel.CreatorId = currentUser.Id;
+            draftModel.CreatedAt = DateTime.Now;
+
+            if (previewPhotos.Any())
+            {
+                var uploadsRoot = Configuration["FileStorageSettings:UploadsRootPath"];
+                if (string.IsNullOrEmpty(uploadsRoot)) throw new Exception("未設定上傳路徑");
+
+                var draftFolder = Path.Combine(uploadsRoot, "drafts", currentUser.Id, DateTime.Now.ToString("yyyyMMdd"));
+                Directory.CreateDirectory(draftFolder);
+
+                foreach (var photo in previewPhotos)
+                {
+                    var fileName = $"{Guid.NewGuid()}.jpg";
+                    var savePath = Path.Combine(draftFolder, fileName);
+
+                    var base64Data = photo.Base64Data.Split(',')[1];
+                    var bytes = Convert.FromBase64String(base64Data);
+
+                    await File.WriteAllBytesAsync(savePath, bytes);
+
+                    var dbPath = $"/uploads/drafts/{currentUser.Id}/{DateTime.Now:yyyyMMdd}/{fileName}";
+
+                    draftModel.Photos.Add(new FieldRecordDraftPhoto
+                        {
+                            FilePath = dbPath,
+                            Category = photo.Category,
+                            CustomNote = photo.CustomNote
+                        });
+                }
+            }
+
+            context.FieldRecordDrafts.Add(draftModel);
+            await context.SaveChangesAsync();
+
+            _navigationManager.NavigateTo("/mytasks");
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"儲存失敗: {ex.Message}";
+            _logger.LogError(ex, "Save draft error");
+            isSaving = false;
+        }
+    }
+
+    public class PreviewPhoto
+    {
+        public string FileName { get; set; } = "";
+        public string Base64Data { get; set; } = "";
+        public string Category { get; set; } = "施工前";
+        public string? CustomNote { get; set; }
+    }
+}

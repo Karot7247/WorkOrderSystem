@@ -1,0 +1,243 @@
+﻿@page "/albums"
+@rendermode InteractiveServer
+@attribute [Authorize]
+
+@using Microsoft.AspNetCore.Authorization
+@using Microsoft.EntityFrameworkCore
+@using WorkOrderSystem.Data
+@using WorkOrderSystem.Models
+
+@inject IDbContextFactory<ApplicationDbContext> DbFactory
+@inject NavigationManager NavigationManager
+
+<PageTitle>相簿總覽</PageTitle>
+
+<h3><i class="bi bi-images me-2"></i>相簿總覽</h3>
+<p class="text-muted">所有客戶的工單照片總覽。</p>
+
+@* --- 搜尋與排序介面 --- *@
+<div class="row g-3 mb-4">
+    <div class="col-md-8">
+        <div class="input-group">
+            <span class="input-group-text bg-white"><i class="bi bi-search"></i></span>
+            <input type="text" class="form-control"
+                   placeholder="搜尋客戶名稱 或 工單標題 (例如：電風扇、冷氣...)"
+                   @bind-value="SearchTerm"
+                   @bind-value:event="oninput" />
+
+            @if (!string.IsNullOrEmpty(SearchTerm))
+            {
+                <button class="btn btn-outline-secondary" type="button" @onclick="ClearSearch">
+                    <i class="bi bi-x-lg"></i>
+                </button>
+            }
+        </div>
+    </div>
+    <div class="col-md-4 d-flex align-items-end">
+        <div class="btn-group w-100" role="group" aria-label="排序按鈕">
+            <button class="btn btn-outline-secondary" @onclick='() => SetSortColumn("CustomerName")'>
+                依名稱 @GetSortIcon("CustomerName")
+            </button>
+            <button class="btn btn-outline-secondary" @onclick='() => SetSortColumn("WorkOrderCount")'>
+                依工單數 @GetSortIcon("WorkOrderCount")
+            </button>
+        </div>
+    </div>
+</div>
+
+@if (isLoading)
+{
+    <p><em>正在載入相簿...</em></p>
+    <div class="spinner-border text-primary" role="status">
+        <span class="visually-hidden">Loading...</span>
+    </div>
+}
+else if (filteredCustomerAlbums.Count == 0)
+{
+    <div class="alert alert-info">
+        @if (string.IsNullOrEmpty(SearchTerm))
+        {
+            <span>目前系統中沒有任何工單包含照片。</span>
+        }
+        else
+        {
+            <span>找不到符合「@SearchTerm」的客戶相簿。</span>
+        }
+    </div>
+}
+else
+{
+    <div class="row g-4">
+        @foreach (var album in filteredCustomerAlbums)
+        {
+            <div class="col-12 col-md-6 col-lg-4 col-xl-3">
+                @* ✨ 修改 1: 移除外層 div 的 @onclick 和 cursor-pointer *@
+                <div class="card h-100 shadow-sm album-card">
+
+                    @if (string.IsNullOrEmpty(album.CoverPhotoUrl))
+                    {
+                        <div class="card-img-top d-flex align-items-center justify-content-center bg-light"
+                             style="aspect-ratio: 4 / 3; object-fit: cover;">
+                            <i class="bi bi-image" style="font-size: 3rem; color: #dee2e6;"></i>
+                        </div>
+                    }
+                    else
+                    {
+                        <img src="@album.CoverPhotoUrl"
+                             class="card-img-top"
+                             style="aspect-ratio: 4 / 3; object-fit: cover;"
+                             alt="@album.CustomerName 封面">
+                    }
+
+                    <div class="card-body">
+                        <h5 class="card-title">
+                            @* ✨ 修改 2: 使用 stretched-link 讓整個卡片都可以點擊 *@
+                            @* 這會自動讓包含這個連結的父層 (card) 變成可點擊區域 *@
+                            <a href="@($"albums/{Uri.EscapeDataString(album.CustomerName)}")"
+                               class="text-decoration-none text-dark stretched-link">
+                                @album.CustomerName
+                            </a>
+                        </h5>
+                        <p class="card-text text-muted mb-1">
+                            @album.WorkOrderCount 個工單
+                        </p>
+
+                        @{
+                            var matchedWO = GetMatchedWorkOrder(album);
+                            if (matchedWO != null)
+                            {
+                                @* ✨ 修改 3: 為內部連結加上 position-relative 和 z-index *@
+                                @* 這是為了讓它浮在 stretched-link 之上，確保可以獨立點擊 *@
+                                <div class="mt-2" style="position: relative; z-index: 2;">
+                                    <a href="@($"albums/{Uri.EscapeDataString(album.CustomerName)}/{matchedWO.Id}")"
+                                       class="text-success text-decoration-none hover-highlight">
+                                        <i class="bi bi-check-circle-fill me-1"></i>包含: @matchedWO.Title
+                                    </a>
+                                </div>
+                            }
+                        }
+                    </div>
+                </div>
+            </div>
+        }
+    </div>
+}
+
+<style>
+    .album-card {
+        transition: transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
+        
+    }
+
+        .album-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 0.5rem 1rem rgba(0, 0, 0, 0.15) !important;
+        }
+
+    .hover-highlight:hover {
+        text-decoration: underline !important;
+        font-weight: bold;
+    }
+</style>
+
+@code {
+    private List<CustomerAlbumViewModel> allCustomerAlbums = new();
+    private List<CustomerAlbumViewModel> filteredCustomerAlbums = new();
+    private bool isLoading = true;
+
+    private string _searchTerm = "";
+    private string SearchTerm
+    {
+        get => _searchTerm;
+        set { _searchTerm = value; ApplySearchAndSort(); }
+    }
+
+    private void ClearSearch() { SearchTerm = string.Empty; }
+
+    private string currentSortColumn = "CustomerName";
+    private bool isSortAscending = true;
+
+    // ✨ 已移除 NavigateToCustomerAlbum 方法，因為改用 HTML 連結了
+
+    protected override async Task OnInitializedAsync()
+    {
+        isLoading = true;
+        await using var context = DbFactory.CreateDbContext();
+
+        allCustomerAlbums = await context.WorkOrders
+            .Where(wo => wo.Photos.Any() || wo.WorkLogs.Any(log => log.Photos.Any()))
+            .GroupBy(wo => wo.CustomerName)
+            .Select(g => new CustomerAlbumViewModel
+                {
+                    CustomerName = g.Key,
+                    WorkOrderCount = g.Count(),
+
+                    // 抓取 Id 和 Title 供搜尋與連結使用
+                    WorkOrders = g.Select(wo => new WorkOrderLiteViewModel
+                    {
+                        Id = wo.Id,
+                        Title = wo.Title
+                    }).ToList(),
+
+                    CoverPhotoUrl = g.SelectMany(wo => wo.Photos).Select(p => p.FilePath).FirstOrDefault() ??
+                                   g.SelectMany(wo => wo.WorkLogs).SelectMany(log => log.Photos).Select(p => p.FilePath).FirstOrDefault()
+                })
+            .AsNoTracking()
+            .ToListAsync();
+
+        ApplySearchAndSort();
+        isLoading = false;
+    }
+
+    private void ApplySearchAndSort()
+    {
+        var query = allCustomerAlbums
+            .Where(a => string.IsNullOrWhiteSpace(SearchTerm) ||
+                        a.CustomerName.Contains(SearchTerm, StringComparison.OrdinalIgnoreCase) ||
+                        (a.WorkOrders != null && a.WorkOrders.Any(w => w.Title.Contains(SearchTerm, StringComparison.OrdinalIgnoreCase))));
+
+        if (currentSortColumn == "CustomerName")
+        {
+            query = isSortAscending ? query.OrderBy(a => a.CustomerName) : query.OrderByDescending(a => a.CustomerName);
+        }
+        else if (currentSortColumn == "WorkOrderCount")
+        {
+            query = isSortAscending ? query.OrderBy(a => a.WorkOrderCount) : query.OrderByDescending(a => a.WorkOrderCount);
+        }
+        filteredCustomerAlbums = query.ToList();
+    }
+
+    private void SetSortColumn(string columnName)
+    {
+        if (currentSortColumn == columnName) isSortAscending = !isSortAscending;
+        else { currentSortColumn = columnName; isSortAscending = true; }
+        ApplySearchAndSort();
+    }
+
+    private RenderFragment GetSortIcon(string columnName)
+    {
+        if (currentSortColumn != columnName) return builder => { };
+        var iconClass = isSortAscending ? "bi-sort-up" : "bi-sort-down";
+        return builder => { builder.OpenElement(0, "i"); builder.AddAttribute(1, "class", $"bi {iconClass} ms-1"); builder.CloseElement(); };
+    }
+
+    private WorkOrderLiteViewModel? GetMatchedWorkOrder(CustomerAlbumViewModel album)
+    {
+        if (string.IsNullOrWhiteSpace(SearchTerm) || album.WorkOrders == null) return null;
+        return album.WorkOrders.FirstOrDefault(w => w.Title.Contains(SearchTerm, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private class CustomerAlbumViewModel
+    {
+        public string CustomerName { get; set; }
+        public int WorkOrderCount { get; set; }
+        public string? CoverPhotoUrl { get; set; }
+        public List<WorkOrderLiteViewModel>? WorkOrders { get; set; }
+    }
+
+    private class WorkOrderLiteViewModel
+    {
+        public int Id { get; set; }
+        public string Title { get; set; }
+    }
+}

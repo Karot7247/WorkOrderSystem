@@ -1,0 +1,858 @@
+﻿@page "/workorders/{WorkOrderId:int}/logs/create"
+@page "/workorders/{WorkOrderId:int}/logs/edit/{WorkLogId:int}"
+@rendermode InteractiveServer
+
+@using System.ComponentModel.DataAnnotations
+@using Microsoft.AspNetCore.Authorization
+@using Microsoft.AspNetCore.Identity
+@using Microsoft.EntityFrameworkCore
+@using System.Security.Claims
+@using WorkOrderSystem.Data
+@using WorkOrderSystem.Models
+@using WorkOrderSystem.Components.Shared
+@using System.IO 
+@* 記得引用 System.IO 處理檔案路徑 *@
+
+@attribute [Authorize]
+
+@inject IDbContextFactory<ApplicationDbContext> DbFactory
+@inject UserManager<AppUser> UserManager
+@inject AuthenticationStateProvider AuthenticationStateProvider
+@inject NavigationManager NavigationManager
+@inject IJSRuntime JSRuntime
+@inject IWebHostEnvironment WebHostEnvironment
+@inject IServiceScopeFactory ScopeFactory
+@inject WorkOrderSystem.Services.LineNotifyService LineNotifyService
+@inject IConfiguration Configuration
+
+<PageTitle>@(IsCreateMode ? "新增" : "編輯")工作日誌</PageTitle>
+
+@if (workOrder is null)
+{
+    <p><em>正在載入工單資訊...</em></p>
+}
+else
+{
+    <h3>@(IsCreateMode ? "新增" : "編輯")日誌</h3>
+    <p class="text-muted">正在為工單 #@workOrder.Id.ToString("D6") - @workOrder.Title 紀錄工作內容。</p>
+
+    <EditForm Model="workLog" OnValidSubmit="HandleSubmitAsync" FormName="WorkLogForm">
+        <DataAnnotationsValidator />
+        <ValidationSummary class="alert alert-danger" />
+
+        @if (!string.IsNullOrEmpty(errorMessage))
+        {
+            <div class="alert alert-danger" role="alert">
+                @errorMessage
+            </div>
+        }
+
+        @* --- [NEW] 匯入預建紀錄區塊 (從 WorkOrderDetail 移植) --- *@
+        @if (myDrafts != null && myDrafts.Any())
+        {
+            <div class="alert alert-secondary d-flex flex-column gap-2 mb-3">
+                <div>
+                    <i class="bi bi-box-arrow-in-down-right"></i> <strong>匯入預建紀錄</strong>
+                    <small class="text-muted d-block">選擇您之前儲存的暫存紀錄，快速填入內容與照片。</small>
+                </div>
+
+                <div class="input-group">
+                    <select class="form-select" @bind="selectedDraftId" disabled="@isImportingDraft">
+                        <option value="0">-- 請選擇一筆紀錄 --</option>
+                        @foreach (var draft in myDrafts)
+                        {
+                            <option value="@draft.Id">@draft.CreatedAt.ToString("MM/dd HH:mm") - @draft.Title</option>
+                        }
+                    </select>
+                    <button class="btn btn-primary" type="button" @onclick="ImportDraftAsync" disabled="@(selectedDraftId == 0 || isImportingDraft)">
+                        @if (isImportingDraft)
+                        {
+                            <span class="spinner-border spinner-border-sm"></span>
+                        }
+                        else
+                        {
+                            <span>匯入</span>
+                        }
+                    </button>
+                </div>
+            </div>
+        }
+        @* --- [NEW END] --- *@
+
+        <div class="row">
+            <div class="col-md-8">
+                <div class="row">
+                    <div class="col-md-6 mb-3">
+                        <label for="logDate" class="form-label">工作日期</label>
+                        <InputDate id="logDate" class="form-control" @bind-Value="workLog.LogDate" />
+                        <ValidationMessage For="@(() => workLog.LogDate)" />
+                    </div>
+                    <div class="col-md-6 mb-3">
+                        <label for="timeSpent" class="form-label">花費時間 (小時)</label>
+                        <InputNumber id="timeSpent" class="form-control" @bind-Value="workLog.TimeSpent" step="0.5" />
+                        <ValidationMessage For="@(() => workLog.TimeSpent)" />
+                    </div>
+                </div>
+
+                <div class="mb-3">
+                    <label for="content" class="form-label">工作內容說明</label>
+                    <InputTextArea id="content" class="form-control" @bind-Value="workLog.Content" rows="8" />
+                    <ValidationMessage For="@(() => workLog.Content)" />
+                </div>
+            </div>
+
+            <div class="col-md-4">
+                <div class="card bg-light h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">參與人員</h5>
+                        <p class="card-text"><small>請勾選系統內參與的人員，或在下方手動輸入臨時人員。</small></p>
+
+                        <div class="mb-3" style="max-height: 200px; overflow-y: auto;">
+                            @foreach (var engineer in availableEngineers)
+                            {
+                                <div class="form-check">
+                                    <input type="checkbox" class="form-check-input" id="engineer-@engineer.Id"
+                                           checked="@selectedParticipantIds.Contains(engineer.Id)"
+                                           @onchange="@(() => ToggleParticipant(engineer.Id))" />
+                                    <label class="form-check-label" for="engineer-@engineer.Id">@engineer.FullName</label>
+                                </div>
+                            }
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label">其他臨時人員 (選填)</label>
+                            <InputText class="form-control" @bind-Value="workLog.CustomParticipants" placeholder="例如：王師傅, 陳先生" />
+                            <div class="form-text">若有多人，請用逗號 (,) 分隔。</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="mb-3 mt-3">
+            <label class="form-label">上傳照片 (可選)</label>
+            <InputFile OnChange="HandleFileSelected" multiple class="form-control"
+                       accept="image/jpeg, image/png, image/webp"
+                       disabled="@isProcessingPhotos" />
+
+            @if (isProcessingPhotos)
+            {
+                <div class="mt-2">
+                    <div class="d-flex align-items-center">
+                        <div class="spinner-border spinner-border-sm text-secondary me-2" role="status">
+                            <span class="visually-hidden">處理中...</span>
+                        </div>
+                        <span class="text-muted">照片處理中... (@filesProcessed / @totalFilesToProcess)</span>
+                    </div>
+                    <div class="progress mt-1" style="height: 5px;">
+                        <div class="progress-bar" role="progressbar"
+                             style="width: @((double)filesProcessed / totalFilesToProcess * 100)%"
+                             aria-valuenow="@filesProcessed" aria-valuemin="0" aria-valuemax="@totalFilesToProcess"></div>
+                    </div>
+                </div>
+            }
+        </div>
+
+        @if (previewPhotos.Any())
+        {
+            <h5 class="mt-4">預覽新照片</h5>
+            <div class="mt-3 mb-3 d-flex flex-wrap" style="gap: 10px;">
+                @foreach (var photo in previewPhotos)
+                {
+                    <div class="position-relative">
+                        <button type="button" class="photo-thumbnail-btn" @onclick="() => OpenGallery(photo.Base64Data)">
+                            <img src="@photo.Base64Data" class="img-thumbnail" style="width: 150px; height: 150px; object-fit: cover;" alt="預覽照片" />
+                        </button>
+
+                        <button type="button" class="btn btn-danger btn-sm position-absolute top-0 end-0 m-1"
+                                aria-label="移除照片" @onclick="() => previewPhotos.Remove(photo)">
+                            <i class="bi bi-x-lg"></i>
+                        </button>
+                    </div>
+                }
+            </div>
+        }
+
+        @if (existingPhotos.Any())
+        {
+            <h5 class="mt-4">已上傳的照片</h5>
+            <div class="mt-3 mb-3 d-flex flex-wrap" style="gap: 10px;">
+                @foreach (var photo in existingPhotos)
+                {
+                    <div class="position-relative">
+                        <button type="button" class="photo-thumbnail-btn" @onclick="@(() => OpenGallery(photo.FilePath))">
+                            <img src="@photo.FilePath" class="img-thumbnail" style="width: 150px; height: 150px; object-fit: cover;" alt="@photo.FileName" />
+                        </button>
+
+                        <button type="button" class="btn btn-danger btn-sm position-absolute top-0 end-0 m-1"
+                                aria-label="刪除照片" @onclick="() => DeleteExistingPhotoAsync(photo.Id)">
+                            <i class="bi bi-trash"></i>
+                        </button>
+                    </div>
+                }
+            </div>
+        }
+        @if (!IsCreateMode && workLog.Histories != null && workLog.Histories.Any())
+        {
+            <div class="mt-5">
+                <h5 class="mb-3"><i class="bi bi-clock-history"></i> 編輯紀錄</h5>
+                <div class="accordion" id="historyAccordion">
+                    @foreach (var history in workLog.Histories.OrderByDescending(h => h.EditedAt))
+                    {
+                        var collapseId = $"collapse-{history.Id}";
+                        var headerId = $"header-{history.Id}";
+                        <div class="accordion-item">
+                            <h2 class="accordion-header" id="@headerId">
+                                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#@collapseId" aria-expanded="false" aria-controls="@collapseId">
+                                    由 <strong>@(history.EditedBy?.FullName ?? "未知使用者")</strong> 於 @history.EditedAt.ToString("yyyy/MM/dd HH:mm") 修改
+                                </button>
+                            </h2>
+                            <div id="@collapseId" class="accordion-collapse collapse" aria-labelledby="@headerId" data-bs-parent="#historyAccordion">
+                                <div class="accordion-body" style="white-space: pre-wrap; background-color: #f8f9fa;">
+                                    @history.ArchivedContent
+                                </div>
+                            </div>
+                        </div>
+                    }
+                </div>
+            </div>
+        }
+
+        <hr />
+        <button type="submit" class="btn btn-success">儲存日誌</button>
+        <a href="@($"/workorders/{WorkOrderId}/logs")" class="btn btn-secondary">取消</a>
+
+    </EditForm>
+}
+@if (isGalleryVisible)
+{
+    <PhotoGallery Photos="galleryPhotos"
+                  StartIndex="galleryStartIndex"
+                  IsVisible="isGalleryVisible"
+                  OnClose="() => isGalleryVisible = false" />
+}
+
+
+@code {
+    [Parameter]
+    public int WorkOrderId { get; set; }
+
+    [Parameter]
+    public int WorkLogId { get; set; }
+
+    private const int MaxLogFiles = 100;
+    private WorkOrder? workOrder;
+    private WorkLog workLog = new();
+    private List<AppUser> availableEngineers = new();
+    private HashSet<string> selectedParticipantIds = new();
+    private List<PreviewPhoto> previewPhotos = new();
+    private List<WorkLogPhoto> existingPhotos = new();
+    private string? errorMessage;
+    private static readonly string[] AllowedImageTypes = { "image/jpeg", "image/png", "image/webp" };
+    private bool IsCreateMode => WorkLogId == 0;
+
+    // 用於 client-side 照片處理的進度欄位
+    private bool isProcessingPhotos = false;
+    private int totalFilesToProcess = 0;
+    private int filesProcessed = 0;
+
+    // 用於燈箱 (Lightbox) 的狀態變數
+    private bool isGalleryVisible = false;
+    private int galleryStartIndex = 0;
+    private List<WorkOrderPhoto> galleryPhotos = new();
+
+    // --- [NEW] 預建紀錄 (Draft) 相關變數 ---
+    private List<FieldRecordDraft> myDrafts = new();
+    private int selectedDraftId;
+    private bool isImportingDraft = false;
+
+    protected override async Task OnInitializedAsync()
+    {
+        using var context = DbFactory.CreateDbContext();
+        workOrder = await context.WorkOrders.AsNoTracking().FirstOrDefaultAsync(w => w.Id == WorkOrderId);
+        if (workOrder == null) return;
+
+        availableEngineers = await context.Users
+            .Where(u => u.IsEngineer || u.IsManager || u.IsSupervisor)
+            .OrderBy(u => u.FullName)
+            .ToListAsync();
+
+        if (IsCreateMode)
+        {
+            var authState = await AuthenticationStateProvider.GetAuthenticationStateAsync();
+            var currentUser = await UserManager.GetUserAsync(authState.User);
+            workLog = new()
+                {
+                    WorkOrderId = WorkOrderId,
+                    LogDate = DateTime.Today,
+                    CreatedById = currentUser?.Id,
+                    TimeSpent = 8
+                };
+        }
+        else
+        {
+            // 在編輯模式下，載入日誌及其歷史紀錄
+            workLog = await context.WorkLogs
+                .Include(l => l.Participants)
+                .Include(l => l.Photos)
+                .Include(l => l.Histories)
+                  .ThenInclude(h => h.EditedBy)
+                .FirstOrDefaultAsync(l => l.Id == WorkLogId);
+
+            if (workLog != null)
+            {
+                selectedParticipantIds = workLog.Participants.Select(p => p.UserId).ToHashSet();
+                existingPhotos = workLog.Photos.ToList();
+            }
+        }
+
+        // --- [NEW] 載入暫存紀錄 ---
+        await LoadMyDraftsAsync();
+    }
+
+    // --- [NEW] 載入該工程師的預建紀錄 ---
+    private async Task LoadMyDraftsAsync()
+    {
+        try
+        {
+            var authState = await AuthenticationStateProvider.GetAuthenticationStateAsync();
+            var userPrincipal = authState.User;
+
+            if (!userPrincipal.Identity.IsAuthenticated) return;
+
+            using var scope = ScopeFactory.CreateScope();
+            var userManager = scope.ServiceProvider.GetRequiredService<UserManager<AppUser>>();
+            var context = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
+            var currentUser = await userManager.GetUserAsync(userPrincipal);
+            if (currentUser == null) return;
+
+            // 撈取 CreatorId == currentUser.Id 的資料
+            myDrafts = await context.FieldRecordDrafts
+                .Include(d => d.Photos)
+                .Where(d => d.CreatorId == currentUser.Id)
+                .OrderByDescending(d => d.CreatedAt)
+                .ToListAsync();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"載入預建紀錄失敗: {ex.Message}");
+        }
+    }
+
+    // --- [NEW] 處理匯入動作 ---
+    private async Task ImportDraftAsync()
+    {
+        if (selectedDraftId == 0) return;
+
+        isImportingDraft = true;
+        errorMessage = null;
+        StateHasChanged();
+
+        try
+        {
+            using var scope = ScopeFactory.CreateScope();
+            var context = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
+            var draft = await context.FieldRecordDrafts
+                .Include(d => d.Photos)
+                .FirstOrDefaultAsync(d => d.Id == selectedDraftId);
+
+            if (draft == null)
+            {
+                errorMessage = "找不到選取的暫存紀錄。";
+                return;
+            }
+
+            // 1. 匯入文字：附加到「工作內容說明」
+            if (!string.IsNullOrWhiteSpace(draft.EngineerNotes))
+            {
+                if (string.IsNullOrWhiteSpace(workLog.Content))
+                    workLog.Content = draft.EngineerNotes;
+                else
+                    workLog.Content += $"\n\n【匯入紀錄 {draft.Title}】：\n{draft.EngineerNotes}";
+            }
+
+            // 2. 匯入照片
+            if (draft.Photos != null && draft.Photos.Any())
+            {
+                var uploadsRoot = Configuration["FileStorageSettings:UploadsRootPath"];
+                int successCount = 0;
+
+                foreach (var draftPhoto in draft.Photos)
+                {
+                    try
+                    {
+                        // 處理路徑：移除 "/uploads"
+                        string relativePath = draftPhoto.FilePath.Replace("/uploads", "", StringComparison.OrdinalIgnoreCase);
+                        relativePath = relativePath.TrimStart('/', '\\');
+
+                        string fullPath = Path.Combine(uploadsRoot, relativePath);
+
+                        if (File.Exists(fullPath))
+                        {
+                            byte[] imageBytes = await File.ReadAllBytesAsync(fullPath);
+                            string base64String = $"data:image/jpeg;base64,{Convert.ToBase64String(imageBytes)}";
+
+                            previewPhotos.Add(new PreviewPhoto
+                            {
+                                FileName = Path.GetFileName(draftPhoto.FilePath),
+                                Base64Data = base64String,
+                                // 日誌沒有 Category/CustomNote 欄位對應 PreviewPhoto，這裡僅保留照片本身
+                            });
+                            successCount++;
+                        }
+                        else
+                        {
+                            Console.WriteLine($"[匯入失敗] 找不到實體檔案: {fullPath}");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[匯入例外] {ex.Message}");
+                    }
+                }
+                
+                // 更新 draft 狀態 (標記已匯入到此工單)
+                draft.ImportedWorkOrderId = workOrder.Id;
+                await context.SaveChangesAsync();
+
+                if (successCount > 0)
+                {
+                    // 可以選擇性顯示成功訊息
+                    // errorMessage = null; 
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"匯入發生錯誤: {ex.Message}";
+        }
+        finally
+        {
+            isImportingDraft = false;
+            selectedDraftId = 0;
+            StateHasChanged();
+        }
+    }
+
+    private void ToggleParticipant(string userId)
+    {
+        if (selectedParticipantIds.Contains(userId))
+        {
+            selectedParticipantIds.Remove(userId);
+        }
+        else
+        {
+            selectedParticipantIds.Add(userId);
+        }
+    }
+
+    private async Task HandleFileSelected(InputFileChangeEventArgs e)
+    {
+        errorMessage = null;
+        IReadOnlyList<IBrowserFile> selectedFiles;
+
+        if (e.FileCount > MaxLogFiles)
+        {
+            errorMessage = $"您一次最多只能選取 {MaxLogFiles} 張照片。您選了 {e.FileCount} 張，系統將只處理前 {MaxLogFiles} 張。";
+            selectedFiles = e.GetMultipleFiles(MaxLogFiles);
+        }
+        else
+        {
+            selectedFiles = e.GetMultipleFiles(MaxLogFiles);
+        }
+
+        isProcessingPhotos = true;
+        totalFilesToProcess = selectedFiles.Count;
+        filesProcessed = 0;
+        StateHasChanged();
+
+        try
+        {
+            foreach (var file in selectedFiles)
+            {
+                if (!AllowedImageTypes.Contains(file.ContentType))
+                {
+                    errorMessage = $"不支援的檔案格式: {file.Name}";
+                    filesProcessed++;
+                    StateHasChanged();
+                    continue;
+                }
+
+                try
+                {
+                    var resizedImageFile = await file.RequestImageFileAsync("image/jpeg", 1280, 1280);
+                    using var memoryStream = new MemoryStream();
+                    await resizedImageFile.OpenReadStream(5 * 1024 * 1024).CopyToAsync(memoryStream);
+                    var buffer = memoryStream.ToArray();
+                    var base64 = $"data:image/jpeg;base64,{Convert.ToBase64String(buffer)}";
+                    previewPhotos.Add(new PreviewPhoto { FileName = file.Name, Base64Data = base64 });
+                }
+                catch (Exception ex)
+                {
+                    errorMessage = $"處理檔案 '{file.Name}' 時發生錯誤: {ex.Message}";
+                }
+                finally
+                {
+                    filesProcessed++;
+                    StateHasChanged();
+                    await Task.Delay(1);
+                }
+            }
+        }
+        finally
+        {
+            isProcessingPhotos = false;
+            StateHasChanged();
+        }
+    }
+
+    private bool isSubmitting = false;
+    private async Task HandleSubmitAsync()
+    {
+        if (isSubmitting) return;
+        isSubmitting = true;
+
+        await InvokeAsync(() =>
+        {
+            errorMessage = "正在儲存日誌，請稍候...";
+            StateHasChanged();
+        });
+        bool success = false;
+        try
+        {
+            using var context = DbFactory.CreateDbContext();
+            if (IsCreateMode)
+            {
+                workLog.Participants = selectedParticipantIds
+                    .Select(userId => new WorkLogParticipant { UserId = userId })
+                    .ToList();
+                workLog.CreatedAt = DateTime.Now;
+                context.WorkLogs.Add(workLog);
+                await context.SaveChangesAsync();
+
+                if (workOrder != null)
+                {
+                    await SendLogCreationNotificationAsync(workOrder, workLog);
+                }
+            }
+            else
+            {
+                var logToUpdate = await context.WorkLogs
+                    .Include(l => l.Participants)
+                    .FirstOrDefaultAsync(l => l.Id == WorkLogId);
+
+                if (logToUpdate is null)
+                {
+                    errorMessage = "找不到要更新的日誌。";
+                    return;
+                }
+
+                var authState = await AuthenticationStateProvider.GetAuthenticationStateAsync();
+                var currentUser = await UserManager.GetUserAsync(authState.User);
+                string oldContent = logToUpdate.Content;
+
+                if (oldContent != workLog.Content)
+                {
+                    var newHistory = new WorkLogHistory
+                        {
+                            WorkLogId = logToUpdate.Id,
+                            ArchivedContent = oldContent,
+                            EditedById = currentUser?.Id,
+                            EditedAt = DateTime.Now
+                        };
+                    context.WorkLogHistories.Add(newHistory);
+                }
+
+                logToUpdate.LogDate = workLog.LogDate;
+                logToUpdate.TimeSpent = workLog.TimeSpent;
+                logToUpdate.Content = workLog.Content;
+                logToUpdate.CustomParticipants = workLog.CustomParticipants;
+
+                var existingIds = logToUpdate.Participants.Select(p => p.UserId).ToHashSet();
+                var selectedIds = selectedParticipantIds;
+                var toRemove = logToUpdate.Participants.Where(p => !selectedIds.Contains(p.UserId)).ToList();
+                foreach (var p in toRemove) { logToUpdate.Participants.Remove(p); }
+                var toAdd = selectedIds.Where(id => !existingIds.Contains(id)).ToList();
+                foreach (var id in toAdd) { logToUpdate.Participants.Add(new WorkLogParticipant { UserId = id }); }
+
+                await context.SaveChangesAsync();
+                if (workOrder != null && oldContent != logToUpdate.Content)
+                {
+                    await SendLogEditNotificationAsync(workOrder, logToUpdate);
+                }
+            }
+
+            if (previewPhotos.Any())
+            {
+                var uploadsRoot = Configuration["FileStorageSettings:UploadsRootPath"];
+                if (string.IsNullOrEmpty(uploadsRoot))
+                {
+                    errorMessage = "嚴重錯誤：檔案儲存路徑(NAS)設定遺失，無法上傳照片。";
+                    success = false;
+                    throw new InvalidOperationException("FileStorageSettings:UploadsRootPath 未在 appsettings.json 中設定。");
+                }
+
+                var currentLogId = IsCreateMode ? workLog.Id : WorkLogId;
+
+                if (workOrder == null)
+                {
+                    errorMessage = "嚴重錯誤：找不到相關工單資訊，無法儲存照片。";
+                    success = false;
+                    throw new InvalidOperationException("workOrder 為 null，無法儲存日誌照片。");
+                }
+                var customerFolderName = SanitizeFolderName(workOrder.CustomerName);
+                var titleFolderName = SanitizeFolderName(workOrder.Title);
+
+                var targetDirectory = Path.Combine(uploadsRoot, customerFolderName, titleFolderName, "WorkLogs", currentLogId.ToString());
+                Directory.CreateDirectory(targetDirectory);
+
+                foreach (var photo in previewPhotos)
+                {
+                    var uniqueFileName = $"{Guid.NewGuid()}.jpg";
+                    var savePath = Path.Combine(targetDirectory, uniqueFileName);
+
+                    try
+                    {
+                        byte[] photoBytes;
+                        try
+                        {
+                            var base64Data = photo.Base64Data.Split(',')[1];
+                            photoBytes = Convert.FromBase64String(base64Data);
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"[HandleSubmitAsync] Base64 轉換失敗 for photo {photo.FileName}: {ex.Message}");
+                            continue; 
+                        }
+
+                        await File.WriteAllBytesAsync(savePath, photoBytes);
+
+                        var dbPath = $"/uploads/{customerFolderName}/{titleFolderName}/WorkLogs/{currentLogId}/{uniqueFileName}".Replace('\\', '/');
+                        context.WorkLogPhotos.Add(new WorkLogPhoto { WorkLogId = currentLogId, FileName = photo.FileName, FilePath = dbPath });
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[HandleSubmitAsync] 儲存日誌照片 '{photo.FileName}' 至 NAS 失敗: {ex.ToString()}");
+                        errorMessage += $"\n儲存照片 '{photo.FileName}' 失敗: {ex.Message}";
+                        success = false;
+                    }
+                }
+                await context.SaveChangesAsync();
+                previewPhotos.Clear();
+            }
+
+            success = true;
+        }
+        catch (Exception ex)
+        {
+            await InvokeAsync(() =>
+            {
+                errorMessage = $"儲存失敗，發生嚴重錯誤：\n{ex.ToString()}";
+                StateHasChanged();
+            });
+            Console.WriteLine($"----------- An error occurred while saving the log -----------\n{ex.ToString()}\n------------------------------------------------------------");
+        }
+        finally
+        {
+            if (success)
+            {
+                await JSRuntime.InvokeVoidAsync("window.location.replace", $"/workorders/{WorkOrderId}/logs");
+            }
+            else
+            {
+                isSubmitting = false;
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+    }
+
+    private async Task DeleteExistingPhotoAsync(int photoId)
+    {
+        var confirmed = await JSRuntime.InvokeAsync<bool>("confirm", "確定要永久刪除這張照片嗎？");
+        if (!confirmed) return;
+
+        using var context = DbFactory.CreateDbContext();
+        var photoToDelete = await context.WorkLogPhotos.FindAsync(photoId);
+        if (photoToDelete != null)
+        {
+            string? fullNasPath = null; 
+            try
+            {
+                var uploadsRoot = Configuration["FileStorageSettings:UploadsRootPath"];
+                if (string.IsNullOrEmpty(uploadsRoot))
+                {
+                    Console.WriteLine($"[DeletePhoto] 錯誤：FileStorageSettings:UploadsRootPath 未設定。無法刪除檔案 {photoToDelete.FilePath}");
+                    errorMessage = "錯誤：無法確定檔案儲存路徑，刪除檔案失敗。";
+                    StateHasChanged();
+                    return;
+                }
+
+                var relativePath = photoToDelete.FilePath.TrimStart('/');
+                relativePath = relativePath.Replace('/', Path.DirectorySeparatorChar);
+                fullNasPath = Path.Combine(uploadsRoot, relativePath);
+
+                Console.WriteLine($"[DeletePhoto] 嘗試刪除檔案於: {fullNasPath}");
+                if (File.Exists(fullNasPath))
+                {
+                    File.Delete(fullNasPath);
+                    Console.WriteLine($"[DeletePhoto] 成功刪除檔案: {fullNasPath}");
+                }
+                else
+                {
+                    Console.WriteLine($"[DeletePhoto] 警告: 檔案未找到於路徑: {fullNasPath}. 跳過檔案刪除。");
+                }
+            }
+            catch (UnauthorizedAccessException uaEx)
+            {
+                Console.WriteLine($"[DeletePhoto] 權限錯誤：無法刪除檔案 {photoToDelete.FilePath} (位於 {fullNasPath})。請檢查 IIS 應用程式集區帳戶對 NAS 路徑的權限。錯誤: {uaEx.Message}");
+                errorMessage = $"權限錯誤：無法刪除照片檔案 {photoToDelete.FileName}。請聯繫管理員。";
+                StateHasChanged();
+                return;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[DeletePhoto] 刪除照片檔案失敗 ({photoToDelete.FilePath}, 位於 {fullNasPath}): {ex.ToString()}");
+                errorMessage = $"刪除照片檔案 '{photoToDelete.FileName}' 失敗，但資料庫記錄將被移除。錯誤：{ex.Message}";
+            }
+
+            context.WorkLogPhotos.Remove(photoToDelete);
+            await context.SaveChangesAsync();
+            existingPhotos.RemoveAll(p => p.Id == photoId);
+            StateHasChanged();
+        }
+    }
+
+    private async Task SendLogEditNotificationAsync(WorkOrder workOrder, WorkLog updatedLog)
+    {
+        try
+        {
+            await using var scope = ScopeFactory.CreateAsyncScope();
+            var userManager = scope.ServiceProvider.GetRequiredService<UserManager<AppUser>>();
+
+            var authState = await AuthenticationStateProvider.GetAuthenticationStateAsync();
+            var currentUser = await userManager.GetUserAsync(authState.User);
+            if (currentUser == null) return;
+            var recipients = await userManager.Users
+                .Where(u => (u.IsManager || u.IsSupervisor) && !string.IsNullOrEmpty(u.LineUserId))
+                .ToListAsync();
+            if (!recipients.Any()) return;
+
+            var baseUrl = Configuration["ApplicationSettings:BaseUrl"];
+            var workOrderUrl = $"{baseUrl}/workorders/details/{workOrder.Id}";
+            var message = $"\n【日誌修改通知】\n" +
+                          $"{currentUser.FullName} 在 {workOrder.CustomerName} 的「{workOrder.Title}」中修改了一筆日誌。\n" +
+                          $"--------------------\n" +
+                          $"{updatedLog.Content}\n" +
+                          $"--------------------\n\n" +
+                          $"查看工單詳情：\n{workOrderUrl}";
+            var notificationTasks = recipients.Select(async user =>
+            {
+                try
+                {
+                    await LineNotifyService.SendPushMessageAsync(user.LineUserId, message);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"發送 LINE 通知給 {user.FullName} ({user.LineUserId}) 失敗: {ex.Message}");
+                }
+            });
+            await Task.WhenAll(notificationTasks);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"準備發送日誌修改通知時發生錯誤: {ex.Message}");
+        }
+    }
+
+    private async Task SendLogCreationNotificationAsync(WorkOrder workOrder, WorkLog workLog)
+    {
+        try
+        {
+            await using var scope = ScopeFactory.CreateAsyncScope();
+            var userManager = scope.ServiceProvider.GetRequiredService<UserManager<AppUser>>();
+
+            var authState = await AuthenticationStateProvider.GetAuthenticationStateAsync();
+            var currentUser = await userManager.GetUserAsync(authState.User);
+            if (currentUser == null) return;
+            var recipients = await userManager.Users
+                .Where(u => (u.IsManager || u.IsSupervisor) && !string.IsNullOrEmpty(u.LineUserId))
+                .ToListAsync();
+            if (!recipients.Any()) return;
+
+            var baseUrl = Configuration["ApplicationSettings:BaseUrl"];
+            var workOrderUrl = $"{baseUrl}/workorders/details/{workOrder.Id}";
+            var message = $"\n【日誌新增通知】\n" +
+                          $"{currentUser.FullName} 在 {workOrder.CustomerName} 的「{workOrder.Title}」中新增了一筆日誌。\n" +
+                          $"--------------------\n" +
+                          $"{workLog.Content}\n" +
+                          $"--------------------\n\n" +
+                          $"查看工單詳情：\n{workOrderUrl}";
+            var notificationTasks = recipients.Select(async user =>
+            {
+                try
+                {
+                    await LineNotifyService.SendPushMessageAsync(user.LineUserId, message);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"發送 LINE 通知給 {user.FullName} ({user.LineUserId}) 失敗: {ex.Message}");
+                }
+            });
+            await Task.WhenAll(notificationTasks);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"發送日誌新增的 LINE 通知時發生錯誤: {ex.Message}");
+        }
+    }
+
+    private string SanitizeFolderName(string folderName)
+    {
+        if (string.IsNullOrWhiteSpace(folderName)) return "Uncategorized";
+        var invalidChars = Path.GetInvalidFileNameChars().Concat(Path.GetInvalidPathChars()).ToArray();
+        return string.Join("_", folderName.Split(invalidChars, StringSplitOptions.RemoveEmptyEntries)).Trim();
+    }
+
+    private void OpenGallery(string clickedPhotoIdentifier)
+    {
+        galleryPhotos.Clear();
+        if (existingPhotos != null)
+        {
+            galleryPhotos.AddRange(existingPhotos.Select(p => new WorkOrderPhoto
+                {
+                    Id = p.Id,
+                    FilePath = p.FilePath,
+                    Category = "已上傳",
+                    CustomNote = p.FileName
+                }));
+        }
+
+        if (previewPhotos != null)
+        {
+            galleryPhotos.AddRange(previewPhotos.Select(p => new WorkOrderPhoto
+                {
+                    Id = 0,
+                    FilePath = p.Base64Data,
+                    Category = "預覽新照片",
+                    CustomNote = p.FileName
+                }));
+        }
+
+        galleryStartIndex = galleryPhotos.FindIndex(p => p.FilePath == clickedPhotoIdentifier);
+        if (galleryStartIndex < 0)
+        {
+            galleryStartIndex = 0;
+        }
+
+        isGalleryVisible = true;
+        StateHasChanged();
+    }
+
+    private class PreviewPhoto
+    {
+        public string FileName { get; set; }
+        public string Base64Data { get; set; }
+    }
+}

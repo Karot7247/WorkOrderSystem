@@ -1,0 +1,102 @@
+﻿@inject IJSRuntime JSRuntime
+
+<style>
+    /* --- 簽名板元件自身的樣式 --- */
+    .signature-pad-component {
+        width: 100%;
+        height: 100%;
+        position: relative; /* 確保 Canvas 和 Controls 可以定位 */
+        display: flex;
+        flex-direction: column;
+        background-color: #333; /* 確保在全螢幕時 Canvas 底部是深色 */
+    }
+
+    /* 簽名區域 Canvas */
+    #signature-canvas-element {
+        width: 100%;
+        /* 讓 Canvas 佔據所有可用空間 */
+        flex-grow: 1;
+        background-color: white;
+    }
+
+    /* 底部操作區塊 (浮動/固定) */
+    /* 使用 position: fixed 確保它在瀏覽器全螢幕時仍然固定在視窗底部 */
+    .fullscreen-controls {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        width: 100%;
+        background-color: rgba(0, 0, 0, 0.7); /* 半透明黑背景 */
+        padding: 10px;
+        z-index: 10; /* 確保在 Canvas 之上 */
+        display: flex;
+        justify-content: flex-end; /* 將按鈕靠右對齊 */
+        gap: 10px; /* 按鈕間距 */
+    }
+</style>
+
+
+<div class="signature-pad-component">
+    <canvas id="signature-canvas-element"></canvas>
+
+    @* ✨ 浮動操作區塊 ✨ *@
+    <div class="fullscreen-controls">
+        <button class="btn btn-secondary" @onclick="Cancel">取消</button>
+        <button class="btn btn-danger" @onclick="Clear">清除</button>
+        <button class="btn btn-success" @onclick="Confirm">確認簽名</button>
+    </div>
+</div>
+
+@code {
+    [Parameter]
+    public EventCallback OnCancel { get; set; }
+
+    [Parameter]
+    public EventCallback<string?> OnConfirm { get; set; }
+
+    [Parameter]
+    public IJSObjectReference? Module { get; set; }
+
+    private const string CanvasId = "signature-canvas-element";
+
+    public async Task InitializeAsync()
+    {
+        if (Module is not null)
+        {
+            await Module.InvokeVoidAsync("initById", CanvasId);
+        }
+    }
+
+    public async Task<string?> SaveAsync()
+    {
+        if (Module is not null)
+        {
+            return await Module.InvokeAsync<string?>("save");
+        }
+        return null;
+    }
+
+    public async Task Clear()
+    {
+        if (Module is not null)
+        {
+            await Module.InvokeVoidAsync("clear");
+        }
+    }
+
+    private async Task Cancel() => await OnCancel.InvokeAsync();
+
+    private async Task Confirm()
+    {
+        try
+        {
+            string? signatureData = await SaveAsync();
+            // 注意：這裡只負責傳遞數據，退出全螢幕和關閉 Modal 的邏輯在 WorkOrderDetail.razor 中
+            await OnConfirm.InvokeAsync(signatureData);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error invoking OnConfirm event: {ex.Message}");
+        }
+    }
+}
