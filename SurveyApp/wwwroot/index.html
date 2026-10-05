@@ -34,7 +34,17 @@
         <a class="dismiss">🗙</a>
     </div>
     <script src="_framework/blazor.webassembly.js"></script>
-    <script>navigator.serviceWorker.register('service-worker.js');</script>
+    <script>
+        // 徹底清除所有舊版的 Service Worker，避免它們攔截 Blazor 連線
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.getRegistrations().then(function (registrations) {
+                for (let registration of registrations) {
+                    registration.unregister();
+                    console.log('已強制解除註冊舊版 Service Worker');
+                }
+            });
+        }
+    </script>
 </body>
 
 </html>

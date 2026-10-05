@@ -7,7 +7,9 @@
 @using Microsoft.EntityFrameworkCore
 @using WorkOrderSystem.Data
 @using WorkOrderSystem.Models
+@using WorkOrderSystem.Components.Shared
 @using System.IO
+@using System.Linq @* ✨ 確保可以使用 LINQ 擴充方法 ✨ *@
 
 @inject AuthenticationStateProvider _authenticationStateProvider
 @inject IServiceScopeFactory ScopeFactory
@@ -68,22 +70,26 @@
                                 @(string.IsNullOrWhiteSpace(draft.EngineerNotes) ? "無施工備註" : draft.EngineerNotes)
                             </p>
 
-                            @* 🔥 照片縮圖預覽區 *@
+                            @* 🔥 照片縮圖預覽區 (修改為使用 ElementAt 避免索引錯誤) *@
                             <div class="d-flex gap-2 mb-3 overflow-hidden" style="height: 60px;">
                                 @if (draft.Photos != null && draft.Photos.Any())
                                 {
                                     @foreach (var photo in draft.Photos.Take(4))
                                     {
                                         <img src="@photo.FilePath"
-                                             class="rounded border"
+                                             class="rounded border photo-btn"
                                              style="width: 60px; height: 60px; object-fit: cover; cursor: pointer;"
-                                             @onclick="() => OpenPreview(photo.FilePath)"
+                                             @onclick="() => OpenGallery(draft, photo.FilePath)"
                                              title="@photo.Category" />
                                     }
                                     @if (draft.Photos.Count > 4)
                                     {
-                                        <div class="d-flex align-items-center justify-content-center bg-light text-muted rounded border small"
-                                             style="width: 60px; height: 60px; cursor: default;">
+                                        @* ✨ 使用 ElementAt(4) 取代 [4] ✨ *@
+                                        var fifthPhotoPath = draft.Photos.ElementAt(4).FilePath;
+                                        <div class="d-flex align-items-center justify-content-center bg-light text-primary fw-bold rounded border small photo-btn"
+                                             style="width: 60px; height: 60px; cursor: pointer;"
+                                             @onclick="() => OpenGallery(draft, fifthPhotoPath)"
+                                             title="查看全部照片">
                                             +@(draft.Photos.Count - 4)
                                         </div>
                                     }
@@ -125,31 +131,32 @@
     }
 </div>
 
-@* --- 圖片預覽 Modal (簡單版) --- *@
-@if (isPreviewOpen)
+@* ✨ 加入系統既有的燈箱元件 ✨ *@
+@if (isGalleryVisible)
 {
-    <div class="modal fade show d-block" tabindex="-1" style="background-color: rgba(0,0,0,0.8);">
-        <div class="modal-dialog modal-dialog-centered modal-lg">
-            <div class="modal-content bg-transparent border-0">
-                <div class="modal-body text-center p-0 position-relative">
-                    <button type="button" class="btn-close btn-close-white position-absolute top-0 end-0 m-3"
-                            style="z-index: 1050; background-color: white; padding: 10px;"
-                            @onclick="ClosePreview"></button>
-                    <img src="@previewImageUrl" class="img-fluid rounded shadow-lg" style="max-height: 85vh;" />
-                </div>
-            </div>
-        </div>
-    </div>
+    <PhotoGallery Photos="galleryPhotos"
+                  StartIndex="galleryStartIndex"
+                  IsVisible="isGalleryVisible"
+                  OnClose="() => isGalleryVisible = false" />
 }
+
+<style>
+    /* 加入縮圖 hover 效果 */
+    .photo-btn:hover {
+        opacity: 0.8;
+        border-color: var(--bs-primary) !important;
+    }
+</style>
 
 @code {
     private List<FieldRecordDraft> drafts = new();
     private bool isLoading = true;
     private AppUser? currentUser;
 
-    // 預覽相關變數
-    private bool isPreviewOpen = false;
-    private string previewImageUrl = "";
+    // ✨ 燈箱控制變數 ✨
+    private bool isGalleryVisible = false;
+    private int galleryStartIndex = 0;
+    private List<WorkOrderPhoto> galleryPhotos = new();
 
     protected override async Task OnInitializedAsync()
     {
@@ -192,16 +199,26 @@
         }
     }
 
-    private void OpenPreview(string url)
+    private void OpenGallery(FieldRecordDraft draft, string clickedFilePath)
     {
-        previewImageUrl = url;
-        isPreviewOpen = true;
-    }
+        if (draft.Photos == null) return;
 
-    private void ClosePreview()
-    {
-        isPreviewOpen = false;
-        previewImageUrl = "";
+        // 轉換格式 (FieldRecordDraftPhoto -> WorkOrderPhoto)
+        galleryPhotos = draft.Photos.Select(p => new WorkOrderPhoto
+        {
+            Id = p.Id,
+            FilePath = p.FilePath,
+            Category = p.Category ?? "暫存紀錄",
+            CustomNote = p.CustomNote
+        }).ToList();
+
+        // 找出點擊的那張照片索引
+        galleryStartIndex = galleryPhotos.FindIndex(p => p.FilePath == clickedFilePath);
+        if (galleryStartIndex < 0) galleryStartIndex = 0;
+
+        // 顯示燈箱
+        isGalleryVisible = true;
+        StateHasChanged();
     }
 
     private async Task DeleteDraftAsync(FieldRecordDraft draft)
@@ -223,14 +240,12 @@
             using var scope = ScopeFactory.CreateScope();
             var context = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
 
-            // 重新讀取確保併發安全
             var draftToDelete = await context.FieldRecordDrafts
                 .Include(d => d.Photos)
                 .FirstOrDefaultAsync(d => d.Id == draft.Id);
 
             if (draftToDelete != null)
             {
-                // 1. 刪除實體照片
                 var uploadsRoot = Configuration["FileStorageSettings:UploadsRootPath"];
                 if (!string.IsNullOrEmpty(uploadsRoot))
                 {
@@ -238,7 +253,6 @@
                     {
                         try
                         {
-                            // 解析路徑: /uploads/drafts/... -> C:\...\drafts\...
                             string relativePath = photo.FilePath.Replace("/uploads", "", StringComparison.OrdinalIgnoreCase);
                             relativePath = relativePath.TrimStart('/', '\\');
                             string fullPath = Path.Combine(uploadsRoot, relativePath);
@@ -251,18 +265,15 @@
                         catch (Exception fileEx)
                         {
                             Console.WriteLine($"刪除檔案失敗: {fileEx.Message}");
-                            // 即使檔案刪除失敗，也要繼續刪除 DB 記錄
                         }
                     }
                 }
 
-                // 2. 刪除資料庫記錄
                 context.FieldRecordDrafts.Remove(draftToDelete);
                 await context.SaveChangesAsync();
 
-                // 3. 更新前端列表
                 drafts.Remove(draft);
-                StateHasChanged(); // 強制刷新 UI
+                StateHasChanged();
             }
         }
         catch (Exception ex)
